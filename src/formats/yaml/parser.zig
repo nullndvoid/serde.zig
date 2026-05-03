@@ -192,6 +192,8 @@ const Parser = struct {
             result = try self.parseBlockSequence(min_indent);
         } else if (c == '|' or c == '>') {
             result = try self.parseBlockScalar();
+        } else if (c == '?' and (self.pos + 1 >= self.input.len or isWhitespaceOrBreak(self.input[self.pos + 1]))) {
+            result = try self.parseBlockMapping(min_indent);
         } else if (self.isBlockMappingKeyAt(self.pos)) {
             result = try self.parseBlockMapping(min_indent);
         } else if (c == '"') {
@@ -315,13 +317,39 @@ const Parser = struct {
             // Document end marker.
             if (self.startsWith("---") or self.startsWith("...")) break;
 
+            // Explicit key indicator: `? key\n: value`.
+            // Only the simple inline-scalar key form is supported; complex keys
+            // (sequences, mappings) following `?` will produce error.InvalidYaml.
+            const is_explicit = self.input[self.pos] == '?' and
+                (self.pos + 1 >= self.input.len or isWhitespaceOrBreak(self.input[self.pos + 1]));
+            if (is_explicit) {
+                self.pos += 1;
+                self.skipWhitespaceInline();
+            }
+
             // Parse key.
             const key = try self.parseScalarKey();
             self.skipWhitespaceInline();
 
+            // For explicit keys the `:` may live on the next line at the same indent.
+            if (is_explicit and self.pos < self.input.len and
+                (self.input[self.pos] == '\n' or self.input[self.pos] == '\r'))
+            {
+                self.skipLineBreak();
+                self.skipWhitespaceAndComments();
+                const next_indent = self.currentIndent();
+                if (next_indent != indent) {
+                    self.allocator.free(key);
+                    return error.InvalidYaml;
+                }
+            }
+
             // Expect ':'.
-            if (self.pos >= self.input.len or self.input[self.pos] != ':')
+            if (self.pos >= self.input.len or self.input[self.pos] != ':') {
+                self.allocator.free(key);
+                if (is_explicit) return error.InvalidYaml;
                 break;
+            }
             self.pos += 1;
             self.skipWhitespaceInline();
 
@@ -1494,6 +1522,27 @@ test "parse literal block scalar still preserves all newlines" {
         \\
     );
     try testing.expectEqualStrings("line1\nline2\n", val.mapping.get("msg").?.string);
+}
+
+test "explicit key with colon on next line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\? simple
+        \\: value
+        \\
+    );
+    try testing.expectEqualStrings("value", val.mapping.get("simple").?.string);
+}
+
+test "explicit key with same-line colon" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\? simple : value
+        \\
+    );
+    try testing.expectEqualStrings("value", val.mapping.get("simple").?.string);
 }
 
 test "tag !!str forces string interpretation" {
