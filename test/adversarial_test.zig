@@ -72,7 +72,8 @@ test "adversarial: JSON deeply nested arrays" {
 test "adversarial: JSON very long number" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const long_num = "9" ** 500;
+    const long_num = try arena.allocator().alloc(u8, 500);
+    @memset(long_num, '9');
     const r = serde.json.fromSlice(i64, arena.allocator(), long_num);
     // Overflow expected.
     _ = r catch {};
