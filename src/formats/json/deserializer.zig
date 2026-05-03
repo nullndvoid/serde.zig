@@ -327,6 +327,7 @@ fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]cons
                         const len = std.unicode.utf8Encode(full, &buf) catch return error.InvalidUnicode;
                         out.appendSlice(allocator, buf[0..len]) catch return error.OutOfMemory;
                     } else {
+                        if (cp >= 0xDC00 and cp <= 0xDFFF) return error.InvalidUnicode;
                         const cp21: u21 = @intCast(cp);
                         var buf: [4]u8 = undefined;
                         const len = std.unicode.utf8Encode(cp21, &buf) catch return error.InvalidUnicode;
@@ -478,6 +479,16 @@ test "deserialize surrogate pair" {
     const s = try d.deserializeString(testing.allocator);
     defer testing.allocator.free(s);
     try testing.expectEqualStrings("\u{1F600}", s);
+}
+
+test "deserialize lone low surrogate is rejected" {
+    var d = Deserializer.init("\"\\uDC00\"");
+    try testing.expectError(error.InvalidUnicode, d.deserializeString(testing.allocator));
+}
+
+test "deserialize unpaired high surrogate is rejected" {
+    var d = Deserializer.init("\"\\uD83D\"");
+    try testing.expectError(error.InvalidUnicode, d.deserializeString(testing.allocator));
 }
 
 test "wrong type error" {
