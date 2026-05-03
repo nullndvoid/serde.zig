@@ -598,6 +598,10 @@ const Parser = struct {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(self.allocator);
 
+        var pending_breaks: u32 = 0;
+        var prev_was_more_indented = false;
+        var first = true;
+
         while (self.pos < self.input.len) {
             var line_spaces: usize = 0;
             const line_start = self.pos;
@@ -606,9 +610,9 @@ const Parser = struct {
                 line_spaces += 1;
             }
 
-            // Empty line.
+            // Blank line (empty or whitespace-only).
             if (self.pos >= self.input.len or self.input[self.pos] == '\n' or self.input[self.pos] == '\r') {
-                out.append(self.allocator, '\n') catch return error.OutOfMemory;
+                pending_breaks += 1;
                 if (self.pos < self.input.len) self.skipLineBreak();
                 continue;
             }
@@ -618,11 +622,23 @@ const Parser = struct {
                 break;
             }
 
-            // Extra indentation.
-            const extra = line_spaces - content_indent;
-            for (0..extra) |_| {
-                out.append(self.allocator, ' ') catch return error.OutOfMemory;
+            const is_more_indented = line_spaces > content_indent;
+
+            if (!first) {
+                if (is_literal) {
+                    for (0..pending_breaks) |_| out.append(self.allocator, '\n') catch return error.OutOfMemory;
+                } else if (prev_was_more_indented or is_more_indented or pending_breaks > 1) {
+                    const breaks: u32 = if (pending_breaks > 1) pending_breaks - 1 else pending_breaks;
+                    for (0..breaks) |_| out.append(self.allocator, '\n') catch return error.OutOfMemory;
+                } else {
+                    out.append(self.allocator, ' ') catch return error.OutOfMemory;
+                }
             }
+            first = false;
+            pending_breaks = 0;
+
+            const extra = line_spaces - content_indent;
+            for (0..extra) |_| out.append(self.allocator, ' ') catch return error.OutOfMemory;
 
             while (self.pos < self.input.len and self.input[self.pos] != '\n' and self.input[self.pos] != '\r') {
                 out.append(self.allocator, self.input[self.pos]) catch return error.OutOfMemory;
@@ -630,14 +646,14 @@ const Parser = struct {
             }
 
             if (self.pos < self.input.len) {
-                if (is_literal) {
-                    out.append(self.allocator, '\n') catch return error.OutOfMemory;
-                } else {
-                    out.append(self.allocator, '\n') catch return error.OutOfMemory;
-                }
+                pending_breaks = 1;
                 self.skipLineBreak();
             }
+
+            prev_was_more_indented = is_more_indented;
         }
+
+        for (0..pending_breaks) |_| out.append(self.allocator, '\n') catch return error.OutOfMemory;
 
         var result = out.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
 
@@ -1258,6 +1274,44 @@ test "parse folded block scalar" {
     defer arena.deinit();
     const val = try parse(arena.allocator(),
         \\msg: >
+        \\  line1
+        \\  line2
+        \\
+    );
+    try testing.expectEqualStrings("line1 line2\n", val.mapping.get("msg").?.string);
+}
+
+test "parse folded block scalar preserves blank lines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\msg: >
+        \\  line1
+        \\
+        \\  line2
+        \\
+    );
+    try testing.expectEqualStrings("line1\nline2\n", val.mapping.get("msg").?.string);
+}
+
+test "parse folded block scalar preserves more-indented lines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\msg: >
+        \\  line1
+        \\    indented
+        \\  line3
+        \\
+    );
+    try testing.expectEqualStrings("line1\n  indented\nline3\n", val.mapping.get("msg").?.string);
+}
+
+test "parse literal block scalar still preserves all newlines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\msg: |
         \\  line1
         \\  line2
         \\
