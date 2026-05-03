@@ -18,11 +18,15 @@ pub const ScanError = error{
     InvalidNumber,
     InvalidUnicode,
     InvalidEscape,
+    InvalidControlCharacter,
 };
 
 pub const Scanner = struct {
     input: []const u8,
     pos: usize = 0,
+    /// When false (default), reject unescaped control characters U+0000..U+001F
+    /// inside strings per RFC 8259 §7.
+    allow_unescaped_control_chars: bool = false,
 
     pub fn next(self: *Scanner) ScanError!Token {
         self.skipWhitespace();
@@ -147,6 +151,7 @@ pub const Scanner = struct {
                     else => return error.InvalidEscape,
                 }
             } else {
+                if (c < 0x20 and !self.allow_unescaped_control_chars) return error.InvalidControlCharacter;
                 self.pos += 1;
             }
         }

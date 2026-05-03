@@ -15,6 +15,7 @@ pub const DeserializeError = error{
     InvalidNumber,
     InvalidUnicode,
     InvalidEscape,
+    InvalidControlCharacter,
     TrailingData,
     WrongType,
     Overflow,
@@ -24,6 +25,9 @@ pub const Options = struct {
     /// When true, JSON `null` deserializes to 0 for integer/float fields.
     /// Default false; non-optional numeric fields receiving null produce error.WrongType.
     lenient_null_to_zero: bool = false,
+    /// When true, unescaped control characters (U+0000..U+001F) inside strings
+    /// are accepted. Default false per RFC 8259 §7.
+    allow_unescaped_control_chars: bool = false,
 };
 
 pub const Deserializer = struct {
@@ -38,7 +42,10 @@ pub const Deserializer = struct {
     }
 
     pub fn initWith(input: []const u8, options: Options) Deserializer {
-        return .{ .scanner = .{ .input = input }, .options = options };
+        return .{
+            .scanner = .{ .input = input, .allow_unescaped_control_chars = options.allow_unescaped_control_chars },
+            .options = options,
+        };
     }
 
     pub fn initBorrowed(input: []const u8) Deserializer {
@@ -46,7 +53,11 @@ pub const Deserializer = struct {
     }
 
     pub fn initBorrowedWith(input: []const u8, options: Options) Deserializer {
-        return .{ .scanner = .{ .input = input }, .borrow_strings = true, .options = options };
+        return .{
+            .scanner = .{ .input = input, .allow_unescaped_control_chars = options.allow_unescaped_control_chars },
+            .borrow_strings = true,
+            .options = options,
+        };
     }
 
     pub fn deserializeBool(self: *Deserializer) Error!bool {

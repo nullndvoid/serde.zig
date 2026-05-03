@@ -620,6 +620,23 @@ test "roundtrip StringHashMap" {
     try testing.expectEqual(@as(i32, 2), result.get("b").?);
 }
 
+test "json unescaped control char in string is rejected" {
+    const input = "{\"x\":\"a\x01b\"}";
+    const Cfg = struct { x: []const u8 };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.InvalidControlCharacter, fromSlice(Cfg, arena.allocator(), input));
+}
+
+test "json unescaped control char accepted with option" {
+    const input = "{\"x\":\"a\x01b\"}";
+    const Cfg = struct { x: []const u8 };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try fromSliceWith(Cfg, arena.allocator(), input, .{ .allow_unescaped_control_chars = true });
+    try testing.expectEqualStrings("a\x01b", val.x);
+}
+
 test "json null to non-optional int is rejected" {
     const Cfg = struct { x: i32 };
     const result = fromSlice(Cfg, testing.allocator, "{\"x\":null}");
