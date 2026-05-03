@@ -151,11 +151,14 @@ pub const Scanner = struct {
             return .{ .cdata = data };
         }
 
-        // Comment: skip.
+        // Comment: skip. Per XML 1.0 §2.5, "--" must not occur within a comment.
         if (self.startsWith("<!--")) {
-            const end = std.mem.indexOf(u8, self.input[self.pos + 4 ..], "-->") orelse
+            const body_start = self.pos + 4;
+            const end = std.mem.indexOf(u8, self.input[body_start..], "-->") orelse
                 return error.UnexpectedEof;
-            self.pos += 4 + end + 3;
+            const body = self.input[body_start .. body_start + end];
+            if (std.mem.indexOf(u8, body, "--") != null) return error.MalformedXml;
+            self.pos = body_start + end + 3;
             return self.scanContent();
         }
 
@@ -371,6 +374,11 @@ test "comment skipped" {
     var s = Scanner{ .input = "<!-- comment --><root/>" };
     const tok = try s.next();
     try testing.expectEqualStrings("root", tok.self_closing);
+}
+
+test "comment containing double-dash rejected" {
+    var s = Scanner{ .input = "<!-- a -- b --><root/>" };
+    try testing.expectError(error.MalformedXml, s.next());
 }
 
 test "CDATA" {
