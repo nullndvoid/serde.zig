@@ -212,7 +212,7 @@ pub const MapAccess = struct {
 
     pub const Error = DeserializeError;
 
-    pub fn nextKey(self: *MapAccess, _: Allocator) Error!?[]const u8 {
+    pub fn nextKey(self: *MapAccess, allocator: Allocator) Error!?[]const u8 {
         const tok = try self.scanner.peek();
         if (tok == .object_end) {
             _ = try self.scanner.next();
@@ -220,7 +220,13 @@ pub const MapAccess = struct {
         }
         const key_tok = try self.scanner.next();
         switch (key_tok) {
-            .string => |raw| return raw,
+            .string => |raw| {
+                if (Scanner.stringHasEscapes(raw)) {
+                    if (self.borrow_strings) return error.InvalidEscape;
+                    return try unescapeString(allocator, raw);
+                }
+                return raw;
+            },
             else => return error.WrongType,
         }
     }

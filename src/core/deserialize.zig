@@ -527,19 +527,32 @@ fn deserializeMapSchema(
     var map = try deserializer.deserializeStruct(T);
 
     while (try map.nextKey(allocator)) |key| {
-        const k: K = if (K == []const u8)
-            key
-        else if (@typeInfo(K) == .int)
+        const k: K = if (K == []const u8) blk: {
+            const owned = allocator.alloc(u8, key.len) catch return deserializer.raiseError(error.OutOfMemory);
+            @memcpy(owned, key);
+            break :blk owned;
+        } else if (@typeInfo(K) == .int)
             std.fmt.parseInt(K, key, 10) catch return deserializer.raiseError(error.InvalidNumber)
         else
             @compileError("Unsupported map key type: " ++ @typeName(K));
 
-        const v = try map.nextValue(V, allocator);
+        const v = map.nextValue(V, allocator) catch |err| {
+            if (K == []const u8) allocator.free(k);
+            return err;
+        };
 
         if (managed) {
-            result.put(k, v) catch return deserializer.raiseError(error.OutOfMemory);
+            result.put(k, v) catch {
+                if (K == []const u8) allocator.free(k);
+                freeAllocated(V, v, allocator);
+                return deserializer.raiseError(error.OutOfMemory);
+            };
         } else {
-            result.put(allocator, k, v) catch return deserializer.raiseError(error.OutOfMemory);
+            result.put(allocator, k, v) catch {
+                if (K == []const u8) allocator.free(k);
+                freeAllocated(V, v, allocator);
+                return deserializer.raiseError(error.OutOfMemory);
+            };
         }
     }
 

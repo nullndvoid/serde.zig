@@ -614,6 +614,29 @@ test "roundtrip StringHashMap" {
     try testing.expectEqual(@as(i32, 2), result.get("b").?);
 }
 
+test "StringHashMap keys outlive input buffer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const original = "{\"alpha\":1,\"beta\":2}";
+    const input = try testing.allocator.dupe(u8, original);
+    var map = try fromSlice(std.StringHashMap(i32), arena.allocator(), input);
+    @memset(input, 0);
+    testing.allocator.free(input);
+
+    try testing.expectEqual(@as(i32, 1), map.get("alpha").?);
+    try testing.expectEqual(@as(i32, 2), map.get("beta").?);
+}
+
+test "StringHashMap key with escape is unescaped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var map = try fromSlice(std.StringHashMap(i32), arena.allocator(), "{\"a\\nb\":7}");
+    try testing.expectEqual(@as(i32, 7), map.get("a\nb").?);
+    try testing.expect(map.get("a\\nb") == null);
+}
+
 test "roundtrip empty map" {
     var map = std.StringHashMap(i32).init(testing.allocator);
     defer map.deinit();
