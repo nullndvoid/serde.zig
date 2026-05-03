@@ -215,6 +215,7 @@ const Parser = struct {
             self.skipWhitespaceAndComments();
             if (self.pos >= self.input.len) break;
 
+            try self.checkNoTabInIndent();
             const indent = self.currentIndent();
             if (indent < min_indent) break;
 
@@ -296,6 +297,7 @@ const Parser = struct {
             self.skipWhitespaceAndComments();
             if (self.pos >= self.input.len) break;
 
+            try self.checkNoTabInIndent();
             const indent = self.currentIndent();
             if (indent < min_indent) break;
 
@@ -871,6 +873,21 @@ const Parser = struct {
         return indent;
     }
 
+    fn checkNoTabInIndent(self: *Parser) ParseError!void {
+        if (!self.options.strict_indent) return;
+        var line_start = self.pos;
+        while (line_start > 0 and self.input[line_start - 1] != '\n' and self.input[line_start - 1] != '\r')
+            line_start -= 1;
+        var p = line_start;
+        var saw_tab = false;
+        while (p < self.input.len and (self.input[p] == ' ' or self.input[p] == '\t')) {
+            if (self.input[p] == '\t') saw_tab = true;
+            p += 1;
+        }
+        if (saw_tab and p < self.input.len and self.input[p] != '\n' and self.input[p] != '\r')
+            return error.InvalidYaml;
+    }
+
     fn columnOf(self: *Parser, pos: usize) i32 {
         var line_start = pos;
         while (line_start > 0 and self.input[line_start - 1] != '\n' and self.input[line_start - 1] != '\r')
@@ -1360,6 +1377,21 @@ test "parse literal block scalar still preserves all newlines" {
         \\
     );
     try testing.expectEqualStrings("line1\nline2\n", val.mapping.get("msg").?.string);
+}
+
+test "tab in indent allowed by default" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const yaml_input = "items:\n  - a\n  - b\n";
+    const val = try parse(arena.allocator(), yaml_input);
+    try testing.expectEqual(@as(usize, 2), val.mapping.get("items").?.sequence.len);
+}
+
+test "tab in indent rejected with strict_indent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const yaml_input = "items:\n\t- a\n";
+    try testing.expectError(error.InvalidYaml, parseWith(arena.allocator(), yaml_input, .{ .strict_indent = true }));
 }
 
 test "yaml 1.1 booleans off by default" {
