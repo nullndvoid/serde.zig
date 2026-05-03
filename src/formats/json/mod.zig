@@ -620,6 +620,30 @@ test "roundtrip StringHashMap" {
     try testing.expectEqual(@as(i32, 2), result.get("b").?);
 }
 
+test "json deep nesting bounded by default max_depth" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    const N = 1000;
+    for (0..N) |_| try buf.append(testing.allocator, '[');
+    try buf.append(testing.allocator, '0');
+    for (0..N) |_| try buf.append(testing.allocator, ']');
+
+    var s = Deserializer.init(buf.items).scanner;
+    try testing.expectError(error.MaxDepthExceeded, s.skipValue());
+}
+
+test "json deep nesting accepted with raised max_depth" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    const N = 1000;
+    for (0..N) |_| try buf.append(testing.allocator, '[');
+    try buf.append(testing.allocator, '0');
+    for (0..N) |_| try buf.append(testing.allocator, ']');
+
+    var d = Deserializer.initWith(buf.items, .{ .max_depth = 2000 });
+    try d.scanner.skipValue();
+}
+
 test "json trailing comma in array rejected" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

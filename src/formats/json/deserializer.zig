@@ -16,6 +16,7 @@ pub const DeserializeError = error{
     InvalidUnicode,
     InvalidEscape,
     InvalidControlCharacter,
+    MaxDepthExceeded,
     TrailingData,
     WrongType,
     Overflow,
@@ -28,6 +29,9 @@ pub const Options = struct {
     /// When true, unescaped control characters (U+0000..U+001F) inside strings
     /// are accepted. Default false per RFC 8259 §7.
     allow_unescaped_control_chars: bool = false,
+    /// Maximum allowed nesting depth for arrays and objects. Beyond this,
+    /// parsing returns error.MaxDepthExceeded. Default 256.
+    max_depth: u32 = 256,
 };
 
 pub const Deserializer = struct {
@@ -43,7 +47,11 @@ pub const Deserializer = struct {
 
     pub fn initWith(input: []const u8, options: Options) Deserializer {
         return .{
-            .scanner = .{ .input = input, .allow_unescaped_control_chars = options.allow_unescaped_control_chars },
+            .scanner = .{
+                .input = input,
+                .allow_unescaped_control_chars = options.allow_unescaped_control_chars,
+                .max_depth = options.max_depth,
+            },
             .options = options,
         };
     }
@@ -54,7 +62,11 @@ pub const Deserializer = struct {
 
     pub fn initBorrowedWith(input: []const u8, options: Options) Deserializer {
         return .{
-            .scanner = .{ .input = input, .allow_unescaped_control_chars = options.allow_unescaped_control_chars },
+            .scanner = .{
+                .input = input,
+                .allow_unescaped_control_chars = options.allow_unescaped_control_chars,
+                .max_depth = options.max_depth,
+            },
             .borrow_strings = true,
             .options = options,
         };
@@ -210,7 +222,7 @@ pub const Deserializer = struct {
         errdefer items.deinit(allocator);
 
         if (try self.scanner.isContainerEmpty(']')) {
-            self.scanner.pos += 1;
+            _ = try self.scanner.next();
             return items.toOwnedSlice(allocator) catch return error.OutOfMemory;
         }
 
@@ -249,7 +261,7 @@ pub const MapAccess = struct {
         if (self.at_start) {
             self.at_start = false;
             if (try self.scanner.isContainerEmpty('}')) {
-                self.scanner.pos += 1;
+                _ = try self.scanner.next();
                 return null;
             }
         } else {
@@ -299,7 +311,7 @@ pub const SeqAccess = struct {
         if (self.at_start) {
             self.at_start = false;
             if (try self.scanner.isContainerEmpty(']')) {
-                self.scanner.pos += 1;
+                _ = try self.scanner.next();
                 return null;
             }
         } else {

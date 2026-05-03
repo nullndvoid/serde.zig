@@ -19,6 +19,7 @@ pub const ScanError = error{
     InvalidUnicode,
     InvalidEscape,
     InvalidControlCharacter,
+    MaxDepthExceeded,
 };
 
 pub const Scanner = struct {
@@ -27,6 +28,10 @@ pub const Scanner = struct {
     /// When false (default), reject unescaped control characters U+0000..U+001F
     /// inside strings per RFC 8259 §7.
     allow_unescaped_control_chars: bool = false,
+    /// Currently open container nesting level (arrays + objects).
+    depth: u32 = 0,
+    /// Maximum allowed nesting depth. Default 256.
+    max_depth: u32 = 256,
 
     pub fn next(self: *Scanner) ScanError!Token {
         self.skipWhitespace();
@@ -35,18 +40,24 @@ pub const Scanner = struct {
         const c = self.input[self.pos];
         switch (c) {
             '{' => {
+                if (self.depth >= self.max_depth) return error.MaxDepthExceeded;
+                self.depth += 1;
                 self.pos += 1;
                 return .object_begin;
             },
             '}' => {
+                if (self.depth > 0) self.depth -= 1;
                 self.pos += 1;
                 return .object_end;
             },
             '[' => {
+                if (self.depth >= self.max_depth) return error.MaxDepthExceeded;
+                self.depth += 1;
                 self.pos += 1;
                 return .array_begin;
             },
             ']' => {
+                if (self.depth > 0) self.depth -= 1;
                 self.pos += 1;
                 return .array_end;
             },
@@ -60,9 +71,11 @@ pub const Scanner = struct {
     }
 
     pub fn peek(self: *Scanner) ScanError!Token {
-        const saved = self.pos;
+        const saved_pos = self.pos;
+        const saved_depth = self.depth;
         const tok = try self.next();
-        self.pos = saved;
+        self.pos = saved_pos;
+        self.depth = saved_depth;
         return tok;
     }
 
@@ -87,6 +100,7 @@ pub const Scanner = struct {
         if (self.pos >= self.input.len) return error.UnexpectedEof;
         const c = self.input[self.pos];
         if (c == end) {
+            if (self.depth > 0) self.depth -= 1;
             self.pos += 1;
             return .end;
         }
@@ -114,7 +128,7 @@ pub const Scanner = struct {
         switch (tok) {
             .object_begin => {
                 if (try self.isContainerEmpty('}')) {
-                    self.pos += 1;
+                    _ = try self.next();
                     return;
                 }
                 while (true) {
@@ -130,7 +144,7 @@ pub const Scanner = struct {
             },
             .array_begin => {
                 if (try self.isContainerEmpty(']')) {
-                    self.pos += 1;
+                    _ = try self.next();
                     return;
                 }
                 while (true) {
