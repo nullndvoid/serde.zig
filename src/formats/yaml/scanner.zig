@@ -47,7 +47,7 @@ pub const Scanner = struct {
     line: usize = 1,
     column: usize = 0,
     allocator: Allocator,
-    indent_stack: [64]i32 = [_]i32{-1} ++ ([_]i32{0} ** 63),
+    indent_stack: [64]i32 = initial_indent_stack,
     indent_depth: usize = 0,
     // Pending synthetic tokens (mapping_end / sequence_end) from indent drops.
     pending_ends: usize = 0,
@@ -56,10 +56,25 @@ pub const Scanner = struct {
     done: bool = false,
     had_document_start: bool = false,
     // Track context: in a mapping or sequence at each indent level.
-    context_stack: [64]Context = [_]Context{.none} ** 64,
+    context_stack: [64]Context = initial_context_stack,
 
     const Context = enum { none, mapping, sequence };
     const PendingType = enum { none, mapping_end, sequence_end, mixed };
+
+    const initial_indent_stack: [64]i32 = blk: {
+        var arr: [64]i32 = undefined;
+        arr[0] = -1;
+        var i: usize = 1;
+        while (i < 64) : (i += 1) arr[i] = 0;
+        break :blk arr;
+    };
+
+    const initial_context_stack: [64]Context = blk: {
+        var arr: [64]Context = undefined;
+        var i: usize = 0;
+        while (i < 64) : (i += 1) arr[i] = .none;
+        break :blk arr;
+    };
 
     pub fn init(allocator: Allocator, input: []const u8) Scanner {
         return .{ .input = input, .allocator = allocator };
