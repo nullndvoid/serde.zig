@@ -5,3 +5,5 @@ zig-out/
 .vscode/
 *.swp
 .DS_Store
+mise.local.toml
+mise.*.local.toml
