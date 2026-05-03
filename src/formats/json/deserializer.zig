@@ -20,9 +20,16 @@ pub const DeserializeError = error{
     Overflow,
 };
 
+pub const Options = struct {
+    /// When true, JSON `null` deserializes to 0 for integer/float fields.
+    /// Default false; non-optional numeric fields receiving null produce error.WrongType.
+    lenient_null_to_zero: bool = false,
+};
+
 pub const Deserializer = struct {
     scanner: Scanner,
     borrow_strings: bool = false,
+    options: Options = .{},
 
     pub const Error = DeserializeError;
 
@@ -30,8 +37,16 @@ pub const Deserializer = struct {
         return .{ .scanner = .{ .input = input } };
     }
 
+    pub fn initWith(input: []const u8, options: Options) Deserializer {
+        return .{ .scanner = .{ .input = input }, .options = options };
+    }
+
     pub fn initBorrowed(input: []const u8) Deserializer {
         return .{ .scanner = .{ .input = input }, .borrow_strings = true };
+    }
+
+    pub fn initBorrowedWith(input: []const u8, options: Options) Deserializer {
+        return .{ .scanner = .{ .input = input }, .borrow_strings = true, .options = options };
     }
 
     pub fn deserializeBool(self: *Deserializer) Error!bool {
@@ -47,7 +62,7 @@ pub const Deserializer = struct {
         const tok = try self.scanner.next();
         switch (tok) {
             .number => |raw| return std.fmt.parseInt(T, raw, 10) catch error.InvalidNumber,
-            .null_lit => return 0,
+            .null_lit => if (self.options.lenient_null_to_zero) return 0 else return error.WrongType,
             else => return error.WrongType,
         }
     }
@@ -56,7 +71,7 @@ pub const Deserializer = struct {
         const tok = try self.scanner.next();
         switch (tok) {
             .number => |raw| return std.fmt.parseFloat(T, raw) catch error.InvalidNumber,
-            .null_lit => return 0,
+            .null_lit => if (self.options.lenient_null_to_zero) return 0 else return error.WrongType,
             else => return error.WrongType,
         }
     }
@@ -167,7 +182,7 @@ pub const Deserializer = struct {
     pub fn deserializeStruct(self: *Deserializer, comptime _: type) Error!MapAccess {
         const tok = try self.scanner.next();
         if (tok != .object_begin) return error.WrongType;
-        return .{ .scanner = &self.scanner, .borrow_strings = self.borrow_strings };
+        return .{ .scanner = &self.scanner, .borrow_strings = self.borrow_strings, .options = self.options };
     }
 
     pub fn deserializeSeq(self: *Deserializer, comptime T: type, allocator: Allocator) Error!T {
@@ -198,7 +213,7 @@ pub const Deserializer = struct {
     pub fn deserializeSeqAccess(self: *Deserializer) Error!SeqAccess {
         const tok = try self.scanner.next();
         if (tok != .array_begin) return error.WrongType;
-        return .{ .scanner = &self.scanner };
+        return .{ .scanner = &self.scanner, .options = self.options };
     }
 
     pub fn raiseError(_: *Deserializer, err: anyerror) Error {
@@ -209,6 +224,7 @@ pub const Deserializer = struct {
 pub const MapAccess = struct {
     scanner: *Scanner,
     borrow_strings: bool = false,
+    options: Options = .{},
 
     pub const Error = DeserializeError;
 
@@ -232,7 +248,7 @@ pub const MapAccess = struct {
     }
 
     pub fn nextValue(self: *MapAccess, comptime T: type, allocator: Allocator) Error!T {
-        var deser = Deserializer{ .scanner = self.scanner.*, .borrow_strings = self.borrow_strings };
+        var deser = Deserializer{ .scanner = self.scanner.*, .borrow_strings = self.borrow_strings, .options = self.options };
         const result = try core_deserialize.deserialize(T, allocator, &deser, .{});
         self.scanner.* = deser.scanner;
         return result;
@@ -249,6 +265,7 @@ pub const MapAccess = struct {
 
 pub const SeqAccess = struct {
     scanner: *Scanner,
+    options: Options = .{},
 
     pub const Error = DeserializeError;
 
@@ -258,7 +275,7 @@ pub const SeqAccess = struct {
             _ = try self.scanner.next();
             return null;
         }
-        var deser = Deserializer{ .scanner = self.scanner.* };
+        var deser = Deserializer{ .scanner = self.scanner.*, .options = self.options };
         const result = try core_deserialize.deserialize(T, allocator, &deser, .{});
         self.scanner.* = deser.scanner;
         return result;

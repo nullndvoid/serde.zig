@@ -16,6 +16,7 @@ pub const Deserializer = deserializer_mod.Deserializer;
 pub const StructSerializer = serializer_mod.StructSerializer;
 pub const ArraySerializer = serializer_mod.ArraySerializer;
 pub const Options = serializer_mod.Options;
+pub const DeserializeOptions = deserializer_mod.Options;
 
 /// Serialize a value to a JSON byte slice. Caller owns the returned memory.
 pub fn toSlice(allocator: std.mem.Allocator, value: anytype) ![]u8 {
@@ -114,7 +115,12 @@ pub fn toPrettyWriter(writer: *compat.Io.Writer, value: anytype, opts: PrettyOpt
 /// Deserialize a value of type T from a JSON byte slice.
 /// Allocates copies of all strings. Use an ArenaAllocator for easy bulk cleanup.
 pub fn fromSlice(comptime T: type, allocator: std.mem.Allocator, input: []const u8) !T {
-    var deser = Deserializer.init(input);
+    return fromSliceWith(T, allocator, input, .{});
+}
+
+/// Deserialize with explicit deserialize options.
+pub fn fromSliceWith(comptime T: type, allocator: std.mem.Allocator, input: []const u8, opts: DeserializeOptions) !T {
+    var deser = Deserializer.initWith(input, opts);
     const result = try core_deserialize.deserialize(T, allocator, &deser, .{});
     try checkTrailingData(&deser);
     return result;
@@ -612,6 +618,25 @@ test "roundtrip StringHashMap" {
     var result = try fromSlice(std.StringHashMap(i32), arena.allocator(), bytes);
     try testing.expectEqual(@as(i32, 1), result.get("a").?);
     try testing.expectEqual(@as(i32, 2), result.get("b").?);
+}
+
+test "json null to non-optional int is rejected" {
+    const Cfg = struct { x: i32 };
+    const result = fromSlice(Cfg, testing.allocator, "{\"x\":null}");
+    try testing.expectError(error.WrongType, result);
+}
+
+test "json null to non-optional float is rejected" {
+    const Cfg = struct { x: f64 };
+    const result = fromSlice(Cfg, testing.allocator, "{\"x\":null}");
+    try testing.expectError(error.WrongType, result);
+}
+
+test "json null to int with lenient_null_to_zero" {
+    const Cfg = struct { x: i32, y: f64 };
+    const val = try fromSliceWith(Cfg, testing.allocator, "{\"x\":null,\"y\":null}", .{ .lenient_null_to_zero = true });
+    try testing.expectEqual(@as(i32, 0), val.x);
+    try testing.expectEqual(@as(f64, 0), val.y);
 }
 
 test "StringHashMap keys outlive input buffer" {
