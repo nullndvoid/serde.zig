@@ -18,19 +18,32 @@ pub const DeserializeError = error{
     MissingField,
     InvalidNumber,
     InvalidQuoting,
+    FieldCountMismatch,
     WrongType,
     Overflow,
+};
+
+pub const Options = struct {
+    /// When true (default), a row with fewer fields than declared headers
+    /// produces error.FieldCountMismatch. When false, missing trailing fields
+    /// are filled with an empty unquoted value.
+    strict_field_count: bool = true,
 };
 
 pub const Deserializer = struct {
     headers: []const []const u8,
     fields: []const Field,
     col: usize,
+    options: Options = .{},
 
     pub const Error = DeserializeError;
 
     pub fn init(headers: []const []const u8, fields: []const Field) Deserializer {
         return .{ .headers = headers, .fields = fields, .col = 0 };
+    }
+
+    pub fn initWith(headers: []const []const u8, fields: []const Field, options: Options) Deserializer {
+        return .{ .headers = headers, .fields = fields, .col = 0, .options = options };
     }
 
     pub fn deserializeBool(_: *Deserializer) Error!bool {
@@ -66,7 +79,7 @@ pub const Deserializer = struct {
     }
 
     pub fn deserializeStruct(self: *Deserializer, comptime _: type) Error!MapAccess {
-        return .{ .headers = self.headers, .fields = self.fields, .col = 0 };
+        return .{ .headers = self.headers, .fields = self.fields, .col = 0, .options = self.options };
     }
 
     pub fn deserializeSeq(_: *Deserializer, comptime _: type, _: Allocator) Error!void {
@@ -86,6 +99,7 @@ pub const MapAccess = struct {
     headers: []const []const u8,
     fields: []const Field,
     col: usize,
+    options: Options = .{},
 
     pub const Error = DeserializeError;
 
@@ -95,10 +109,12 @@ pub const MapAccess = struct {
     }
 
     pub fn nextValue(self: *MapAccess, comptime T: type, allocator: Allocator) Error!T {
-        const field = if (self.col < self.fields.len)
-            self.fields[self.col]
-        else
-            Field{ .raw = "", .quoted = false };
+        if (self.col >= self.fields.len) {
+            if (self.options.strict_field_count) return error.FieldCountMismatch;
+            self.col += 1;
+            return parseField(T, Field{ .raw = "", .quoted = false }, allocator);
+        }
+        const field = self.fields[self.col];
         self.col += 1;
         return parseField(T, field, allocator);
     }
@@ -177,6 +193,7 @@ fn errorFromAny(err: anyerror) DeserializeError {
         error.UnknownField => error.UnknownField,
         error.MissingField => error.MissingField,
         error.UnexpectedEof => error.UnexpectedEof,
+        error.FieldCountMismatch => error.FieldCountMismatch,
         error.OutOfMemory => error.OutOfMemory,
         else => error.WrongType,
     };

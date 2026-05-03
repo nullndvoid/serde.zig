@@ -204,7 +204,8 @@ test "stress: large i32 slice JSON" {
 test "stress: large string JSON" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const big = "A" ** 10000;
+    const big = try arena.allocator().alloc(u8, 10000);
+    @memset(big, 'A');
     const S = struct { data: []const u8 };
     const bytes = try serde.json.toSlice(arena.allocator(), S{ .data = big });
     const r = try serde.json.fromSlice(S, arena.allocator(), bytes);

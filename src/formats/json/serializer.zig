@@ -6,6 +6,10 @@ const json_writer = @import("writer.zig");
 pub const Options = struct {
     pretty: bool = false,
     indent: u8 = 2,
+    /// When true, escape U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR)
+    /// as ` ` / ` `. They are valid JSON characters but invalid in
+    /// JavaScript string literals; escape when embedding output in HTML <script>.
+    escape_js_unsafe: bool = false,
 };
 
 pub const SerializeError = error{ OutOfMemory, WriteFailed };
@@ -51,7 +55,9 @@ pub fn Serializer(comptime _map: anytype) type {
         }
 
         pub fn serializeString(self: *Self, value: []const u8) Error!void {
-            json_writer.writeJsonString(self.out, value) catch return error.WriteFailed;
+            json_writer.writeJsonStringWith(self.out, value, .{
+                .escape_js_unsafe = self.options.escape_js_unsafe,
+            }) catch return error.WriteFailed;
         }
 
         pub fn serializeNull(self: *Self) Error!void {

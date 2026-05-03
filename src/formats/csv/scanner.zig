@@ -5,6 +5,10 @@ pub const Dialect = struct {
     quote: u8 = '"',
     has_header: bool = true,
     trim_whitespace: bool = false,
+    /// When true (default), a row with fewer fields than headers produces
+    /// error.FieldCountMismatch on deserialize. When false, missing trailing
+    /// fields are filled with an empty unquoted value.
+    strict_field_count: bool = true,
 };
 
 pub const tsv_dialect: Dialect = .{ .delimiter = '\t' };

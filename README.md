@@ -834,8 +834,14 @@ Deserialization returns specific errors:
 - `error.MissingField` -- required struct field absent
 - `error.UnknownField` -- unexpected field (with `deny_unknown_fields`)
 - `error.InvalidNumber` -- number parse failure or overflow
+- `error.InvalidUnicode` -- malformed unicode escape (e.g. lone surrogate)
+- `error.InvalidControlCharacter` -- unescaped control char in JSON string
+- `error.MaxDepthExceeded` -- JSON nesting deeper than configured limit
 - `error.WrongType` -- input type doesn't match target type
 - `error.DuplicateField` -- same field appears twice
+- `error.FieldCountMismatch` -- CSV row has fewer fields than headers
+- `error.MalformedXml` -- structurally invalid XML (e.g. `--` inside comment)
+- `error.InvalidYaml` -- structurally invalid YAML
 
 ```zig
 const result = serde.json.fromSlice(Config, allocator, input) catch |err| switch (err) {
@@ -844,6 +850,76 @@ const result = serde.json.fromSlice(Config, allocator, input) catch |err| switch
     else => return err,
 };
 ```
+
+## Deserialize Options
+
+Each format exposes a `fromSliceWith` entry point taking format-specific options.
+
+### JSON (`serde.json.DeserializeOptions`)
+
+```zig
+const val = try serde.json.fromSliceWith(Config, allocator, input, .{
+    .lenient_null_to_zero = false,             // true: null -> 0 for int/float
+    .allow_unescaped_control_chars = false,    // true: accept raw 0x00..0x1f in strings
+    .max_depth = 256,                          // raise for very nested input
+});
+```
+
+Defaults reject behavior that violates RFC 8259. Set `lenient_null_to_zero` to opt
+back into pre-fix behavior where JSON `null` silently became `0` for non-optional
+numeric fields.
+
+### YAML (`serde.yaml.DeserializeOptions`)
+
+```zig
+const val = try serde.yaml.fromSliceWith(Config, allocator, input, .{
+    .yaml_11_booleans = false,   // true: yes/no/on/off recognized as booleans
+    .strict_indent = false,      // true: error on tab in indentation columns
+});
+```
+
+Default is YAML 1.2 behavior. Enabling `yaml_11_booleans` brings the "Norway
+problem" (`country: NO` -> `false`).
+
+### CSV (`Dialect.strict_field_count`)
+
+```zig
+const dialect = serde.csv.Dialect{ .strict_field_count = true };
+const rows = try serde.csv.fromSliceWith([]const Row, allocator, input, dialect);
+```
+
+Defaults to true: rows with fewer fields than headers produce
+`error.FieldCountMismatch`. Set to false to silently fill missing trailing
+fields with empty values.
+
+### JSON serializer (`serde.json.Options.escape_js_unsafe`)
+
+```zig
+const bytes = try serde.json.toSliceWith(allocator, value, .{ .escape_js_unsafe = true });
+```
+
+When true, U+2028 and U+2029 are escaped as ` ` / ` `. They are valid
+JSON characters but illegal in JavaScript string literals; escape when embedding
+output in HTML `<script>` tags.
+
+## Migration
+
+`serde.json.fromSlice` is now stricter by default and may reject inputs that
+previously parsed silently:
+
+- `null` for a non-optional `i32` / `f64` field now errors. Mark the field
+  optional (`?i32`) or pass `.lenient_null_to_zero = true`.
+- Trailing, missing, and double commas (`[1,2,]`, `[1 2 3]`, `[1,,2]`) now error.
+- Unescaped control characters (raw bytes `0x00..0x1f`) inside JSON strings now
+  error. Pass `.allow_unescaped_control_chars = true` to keep parsing them.
+- Nesting deeper than 256 levels errors with `error.MaxDepthExceeded`. Raise
+  `.max_depth` if you have legitimately deep input.
+- JSON `\uDC00` (lone low surrogate) and `\uD83D` (unpaired high surrogate)
+  in string escapes now error.
+
+CSV `fromSlice` is also stricter: a data row with fewer fields than the header
+errors. Pass a dialect with `.strict_field_count = false` to retain legacy
+behavior.
 
 ## Performance
 

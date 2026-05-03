@@ -16,6 +16,7 @@ pub const Deserializer = deserializer_mod.Deserializer;
 pub const StructSerializer = serializer_mod.StructSerializer;
 pub const ArraySerializer = serializer_mod.ArraySerializer;
 pub const Options = serializer_mod.Options;
+pub const DeserializeOptions = deserializer_mod.Options;
 
 /// Serialize a value to a JSON byte slice. Caller owns the returned memory.
 pub fn toSlice(allocator: std.mem.Allocator, value: anytype) ![]u8 {
@@ -114,7 +115,12 @@ pub fn toPrettyWriter(writer: *compat.Io.Writer, value: anytype, opts: PrettyOpt
 /// Deserialize a value of type T from a JSON byte slice.
 /// Allocates copies of all strings. Use an ArenaAllocator for easy bulk cleanup.
 pub fn fromSlice(comptime T: type, allocator: std.mem.Allocator, input: []const u8) !T {
-    var deser = Deserializer.init(input);
+    return fromSliceWith(T, allocator, input, .{});
+}
+
+/// Deserialize with explicit deserialize options.
+pub fn fromSliceWith(comptime T: type, allocator: std.mem.Allocator, input: []const u8, opts: DeserializeOptions) !T {
+    var deser = Deserializer.initWith(input, opts);
     const result = try core_deserialize.deserialize(T, allocator, &deser, .{});
     try checkTrailingData(&deser);
     return result;
@@ -612,6 +618,117 @@ test "roundtrip StringHashMap" {
     var result = try fromSlice(std.StringHashMap(i32), arena.allocator(), bytes);
     try testing.expectEqual(@as(i32, 1), result.get("a").?);
     try testing.expectEqual(@as(i32, 2), result.get("b").?);
+}
+
+test "json deep nesting bounded by default max_depth" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    const N = 1000;
+    for (0..N) |_| try buf.append(testing.allocator, '[');
+    try buf.append(testing.allocator, '0');
+    for (0..N) |_| try buf.append(testing.allocator, ']');
+
+    var s = Deserializer.init(buf.items).scanner;
+    try testing.expectError(error.MaxDepthExceeded, s.skipValue());
+}
+
+test "json deep nesting accepted with raised max_depth" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    const N = 1000;
+    for (0..N) |_| try buf.append(testing.allocator, '[');
+    try buf.append(testing.allocator, '0');
+    for (0..N) |_| try buf.append(testing.allocator, ']');
+
+    var d = Deserializer.initWith(buf.items, .{ .max_depth = 2000 });
+    try d.scanner.skipValue();
+}
+
+test "json trailing comma in array rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.UnexpectedToken, fromSlice([]const i32, arena.allocator(), "[1,2,]"));
+}
+
+test "json trailing comma in object rejected" {
+    const Cfg = struct { a: i32 };
+    try testing.expectError(error.UnexpectedToken, fromSlice(Cfg, testing.allocator, "{\"a\":1,}"));
+}
+
+test "json missing comma between elements rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.UnexpectedToken, fromSlice([]const i32, arena.allocator(), "[1 2]"));
+}
+
+test "json missing colon rejected" {
+    const Cfg = struct { a: i32 };
+    try testing.expectError(error.UnexpectedToken, fromSlice(Cfg, testing.allocator, "{\"a\" 1}"));
+}
+
+test "json double comma rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.UnexpectedToken, fromSlice([]const i32, arena.allocator(), "[1,,2]"));
+}
+
+test "json unescaped control char in string is rejected" {
+    const input = "{\"x\":\"a\x01b\"}";
+    const Cfg = struct { x: []const u8 };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.InvalidControlCharacter, fromSlice(Cfg, arena.allocator(), input));
+}
+
+test "json unescaped control char accepted with option" {
+    const input = "{\"x\":\"a\x01b\"}";
+    const Cfg = struct { x: []const u8 };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try fromSliceWith(Cfg, arena.allocator(), input, .{ .allow_unescaped_control_chars = true });
+    try testing.expectEqualStrings("a\x01b", val.x);
+}
+
+test "json null to non-optional int is rejected" {
+    const Cfg = struct { x: i32 };
+    const result = fromSlice(Cfg, testing.allocator, "{\"x\":null}");
+    try testing.expectError(error.WrongType, result);
+}
+
+test "json null to non-optional float is rejected" {
+    const Cfg = struct { x: f64 };
+    const result = fromSlice(Cfg, testing.allocator, "{\"x\":null}");
+    try testing.expectError(error.WrongType, result);
+}
+
+test "json null to int with lenient_null_to_zero" {
+    const Cfg = struct { x: i32, y: f64 };
+    const val = try fromSliceWith(Cfg, testing.allocator, "{\"x\":null,\"y\":null}", .{ .lenient_null_to_zero = true });
+    try testing.expectEqual(@as(i32, 0), val.x);
+    try testing.expectEqual(@as(f64, 0), val.y);
+}
+
+test "StringHashMap keys outlive input buffer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const original = "{\"alpha\":1,\"beta\":2}";
+    const input = try testing.allocator.dupe(u8, original);
+    var map = try fromSlice(std.StringHashMap(i32), arena.allocator(), input);
+    @memset(input, 0);
+    testing.allocator.free(input);
+
+    try testing.expectEqual(@as(i32, 1), map.get("alpha").?);
+    try testing.expectEqual(@as(i32, 2), map.get("beta").?);
+}
+
+test "StringHashMap key with escape is unescaped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var map = try fromSlice(std.StringHashMap(i32), arena.allocator(), "{\"a\\nb\":7}");
+    try testing.expectEqual(@as(i32, 7), map.get("a\nb").?);
+    try testing.expect(map.get("a\\nb") == null);
 }
 
 test "roundtrip empty map" {

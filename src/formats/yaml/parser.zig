@@ -45,13 +45,29 @@ pub const Value = union(enum) {
 
 pub const Mapping = compat.StringArrayHashMap(Value);
 
+pub const ParseOptions = struct {
+    /// When true, recognize YAML 1.1-style boolean literals (yes/no/on/off
+    /// and case variants) as booleans. Default false (YAML 1.2 behavior).
+    /// Beware the "Norway problem": `country: NO` becomes `false`.
+    yaml_11_booleans: bool = false,
+    /// When true, error on tab characters in indentation columns. YAML
+    /// forbids tabs as indentation but the default keeps prior tolerant
+    /// behavior.
+    strict_indent: bool = false,
+};
+
 /// Parse YAML input into a Value tree.
 pub fn parse(allocator: Allocator, input: []const u8) ParseError!Value {
+    return parseWith(allocator, input, .{});
+}
+
+pub fn parseWith(allocator: Allocator, input: []const u8, opts: ParseOptions) ParseError!Value {
     var p = Parser{
         .input = input,
         .pos = 0,
         .allocator = allocator,
         .anchors = std.StringHashMap(Value).init(allocator),
+        .options = opts,
     };
     defer p.anchors.deinit();
     return p.parseDocument();
@@ -60,6 +76,10 @@ pub fn parse(allocator: Allocator, input: []const u8) ParseError!Value {
 /// Parse multi-document YAML input. Documents are separated by `---`
 /// and optionally terminated by `...`.
 pub fn parseAll(allocator: Allocator, input: []const u8) ParseError![]Value {
+    return parseAllWith(allocator, input, .{});
+}
+
+pub fn parseAllWith(allocator: Allocator, input: []const u8, opts: ParseOptions) ParseError![]Value {
     var docs: std.ArrayList(Value) = .empty;
     errdefer {
         for (docs.items) |*v| v.deinit(allocator);
@@ -70,6 +90,7 @@ pub fn parseAll(allocator: Allocator, input: []const u8) ParseError![]Value {
         .pos = 0,
         .allocator = allocator,
         .anchors = std.StringHashMap(Value).init(allocator),
+        .options = opts,
     };
     defer p.anchors.deinit();
 
@@ -86,6 +107,8 @@ pub fn parseAll(allocator: Allocator, input: []const u8) ParseError![]Value {
             continue;
         }
 
+        // YAML 1.2 §3.2.2.2: anchors are scoped to the document they appear in.
+        p.anchors.clearRetainingCapacity();
         const doc = try p.parseDocument();
         docs.append(allocator, doc) catch return error.OutOfMemory;
     }
@@ -98,6 +121,7 @@ const Parser = struct {
     pos: usize,
     allocator: Allocator,
     anchors: std.StringHashMap(Value),
+    options: ParseOptions = .{},
 
     fn parseDocument(self: *Parser) ParseError!Value {
         self.skipWhitespaceAndComments();
@@ -144,10 +168,13 @@ const Parser = struct {
             return try self.deepClone(&val, 0);
         }
 
-        // Skip tag.
+        // Capture tag.
+        var tag: ?[]const u8 = null;
         if (self.pos < self.input.len and self.input[self.pos] == '!') {
+            const start = self.pos;
             while (self.pos < self.input.len and !isWhitespaceOrBreak(self.input[self.pos]))
                 self.pos += 1;
+            tag = self.input[start..self.pos];
             self.skipWhitespaceInline();
         }
 
@@ -165,6 +192,8 @@ const Parser = struct {
             result = try self.parseBlockSequence(min_indent);
         } else if (c == '|' or c == '>') {
             result = try self.parseBlockScalar();
+        } else if (c == '?' and (self.pos + 1 >= self.input.len or isWhitespaceOrBreak(self.input[self.pos + 1]))) {
+            result = try self.parseBlockMapping(min_indent);
         } else if (self.isBlockMappingKeyAt(self.pos)) {
             result = try self.parseBlockMapping(min_indent);
         } else if (c == '"') {
@@ -173,7 +202,16 @@ const Parser = struct {
             result = try self.parseSingleQuotedScalar();
         } else {
             const plain = self.scanPlainScalar();
-            result = resolveScalarType(plain, .plain);
+            // For tag-coerced scalars, preserve the raw bytes for later interpretation.
+            if (tag != null) {
+                result = .{ .string = self.allocator.dupe(u8, plain) catch return error.OutOfMemory };
+            } else {
+                result = resolveScalarTypeWith(plain, .plain, self.options);
+            }
+        }
+
+        if (tag) |t| {
+            result = try self.applyTag(t, result);
         }
 
         if (anchor_name) |name| {
@@ -181,6 +219,87 @@ const Parser = struct {
         }
 
         return result;
+    }
+
+    fn applyTag(self: *Parser, tag: []const u8, value: Value) ParseError!Value {
+        // Recognized YAML core schema tags. Verbatim and unknown tags are
+        // ignored (the value is returned as-is).
+        const eq = std.mem.eql;
+
+        if (eq(u8, tag, "!!str") or eq(u8, tag, "!!string")) {
+            switch (value) {
+                .string => return value,
+                .null_val => {
+                    const empty = self.allocator.alloc(u8, 0) catch return error.OutOfMemory;
+                    return .{ .string = empty };
+                },
+                else => return error.InvalidYaml,
+            }
+        }
+        if (eq(u8, tag, "!!int")) {
+            switch (value) {
+                .integer => return value,
+                .string => |s| {
+                    const v = std.fmt.parseInt(i64, s, 10) catch return error.InvalidYaml;
+                    self.allocator.free(s);
+                    return .{ .integer = v };
+                },
+                else => return error.InvalidYaml,
+            }
+        }
+        if (eq(u8, tag, "!!float")) {
+            switch (value) {
+                .float => return value,
+                .integer => |i| return .{ .float = @floatFromInt(i) },
+                .string => |s| {
+                    const v = std.fmt.parseFloat(f64, s) catch return error.InvalidYaml;
+                    self.allocator.free(s);
+                    return .{ .float = v };
+                },
+                else => return error.InvalidYaml,
+            }
+        }
+        if (eq(u8, tag, "!!bool")) {
+            switch (value) {
+                .boolean => return value,
+                .string => |s| {
+                    const lower_true = eq(u8, s, "true") or eq(u8, s, "True") or eq(u8, s, "TRUE");
+                    const lower_false = eq(u8, s, "false") or eq(u8, s, "False") or eq(u8, s, "FALSE");
+                    if (!lower_true and !lower_false) return error.InvalidYaml;
+                    self.allocator.free(s);
+                    return .{ .boolean = lower_true };
+                },
+                else => return error.InvalidYaml,
+            }
+        }
+        if (eq(u8, tag, "!!null")) {
+            switch (value) {
+                .null_val => return value,
+                .string => |s| {
+                    if (s.len == 0 or eq(u8, s, "null") or eq(u8, s, "Null") or
+                        eq(u8, s, "NULL") or eq(u8, s, "~"))
+                    {
+                        self.allocator.free(s);
+                        return .null_val;
+                    }
+                    return error.InvalidYaml;
+                },
+                else => return error.InvalidYaml,
+            }
+        }
+        if (eq(u8, tag, "!!seq")) {
+            return switch (value) {
+                .sequence => value,
+                else => error.InvalidYaml,
+            };
+        }
+        if (eq(u8, tag, "!!map")) {
+            return switch (value) {
+                .mapping => value,
+                else => error.InvalidYaml,
+            };
+        }
+        return value;
     }
 
     fn parseBlockMapping(self: *Parser, min_indent: i32) ParseError!Value {
@@ -191,19 +310,46 @@ const Parser = struct {
             self.skipWhitespaceAndComments();
             if (self.pos >= self.input.len) break;
 
+            try self.checkNoTabInIndent();
             const indent = self.currentIndent();
             if (indent < min_indent) break;
 
             // Document end marker.
             if (self.startsWith("---") or self.startsWith("...")) break;
 
+            // Explicit key indicator: `? key\n: value`.
+            // Only the simple inline-scalar key form is supported; complex keys
+            // (sequences, mappings) following `?` will produce error.InvalidYaml.
+            const is_explicit = self.input[self.pos] == '?' and
+                (self.pos + 1 >= self.input.len or isWhitespaceOrBreak(self.input[self.pos + 1]));
+            if (is_explicit) {
+                self.pos += 1;
+                self.skipWhitespaceInline();
+            }
+
             // Parse key.
             const key = try self.parseScalarKey();
             self.skipWhitespaceInline();
 
+            // For explicit keys the `:` may live on the next line at the same indent.
+            if (is_explicit and self.pos < self.input.len and
+                (self.input[self.pos] == '\n' or self.input[self.pos] == '\r'))
+            {
+                self.skipLineBreak();
+                self.skipWhitespaceAndComments();
+                const next_indent = self.currentIndent();
+                if (next_indent != indent) {
+                    self.allocator.free(key);
+                    return error.InvalidYaml;
+                }
+            }
+
             // Expect ':'.
-            if (self.pos >= self.input.len or self.input[self.pos] != ':')
+            if (self.pos >= self.input.len or self.input[self.pos] != ':') {
+                self.allocator.free(key);
+                if (is_explicit) return error.InvalidYaml;
                 break;
+            }
             self.pos += 1;
             self.skipWhitespaceInline();
 
@@ -272,6 +418,7 @@ const Parser = struct {
             self.skipWhitespaceAndComments();
             if (self.pos >= self.input.len) break;
 
+            try self.checkNoTabInIndent();
             const indent = self.currentIndent();
             if (indent < min_indent) break;
 
@@ -313,16 +460,35 @@ const Parser = struct {
     fn parseInlineValue(self: *Parser) ParseError!Value {
         if (self.pos >= self.input.len) return .null_val;
 
+        // Capture tag.
+        var tag: ?[]const u8 = null;
+        if (self.input[self.pos] == '!') {
+            const tag_start = self.pos;
+            while (self.pos < self.input.len and !isWhitespaceOrBreak(self.input[self.pos]))
+                self.pos += 1;
+            tag = self.input[tag_start..self.pos];
+            self.skipWhitespaceInline();
+            if (self.pos >= self.input.len) {
+                if (tag) |t| return self.applyTag(t, .null_val);
+                return .null_val;
+            }
+        }
+
         const c = self.input[self.pos];
 
-        if (c == '{') return self.parseFlowMapping();
-        if (c == '[') return self.parseFlowSequence();
-        if (c == '"') return self.parseDoubleQuotedScalar();
-        if (c == '\'') return self.parseSingleQuotedScalar();
-        if (c == '|' or c == '>') return self.parseBlockScalar();
-
-        // Handle anchor in inline value.
-        if (c == '&') {
+        var result: Value = undefined;
+        if (c == '{') {
+            result = try self.parseFlowMapping();
+        } else if (c == '[') {
+            result = try self.parseFlowSequence();
+        } else if (c == '"') {
+            result = try self.parseDoubleQuotedScalar();
+        } else if (c == '\'') {
+            result = try self.parseSingleQuotedScalar();
+        } else if (c == '|' or c == '>') {
+            result = try self.parseBlockScalar();
+        } else if (c == '&') {
+            // Handle anchor in inline value.
             self.pos += 1;
             const start = self.pos;
             while (self.pos < self.input.len and !isWhitespaceOrBreak(self.input[self.pos]))
@@ -332,10 +498,8 @@ const Parser = struct {
             const val = try self.parseInlineValue();
             self.anchors.put(anchor_name, val) catch return error.OutOfMemory;
             return val;
-        }
-
-        // Handle alias.
-        if (c == '*') {
+        } else if (c == '*') {
+            // Handle alias.
             self.pos += 1;
             const start = self.pos;
             while (self.pos < self.input.len and !isWhitespaceOrBreak(self.input[self.pos]) and
@@ -344,11 +508,18 @@ const Parser = struct {
             const alias_name = self.input[start..self.pos];
             const val = self.anchors.get(alias_name) orelse return error.InvalidYaml;
             return try self.deepClone(&val, 0);
+        } else {
+            const plain = self.scanPlainScalar();
+            self.skipToEndOfLine();
+            if (tag != null) {
+                result = .{ .string = self.allocator.dupe(u8, plain) catch return error.OutOfMemory };
+            } else {
+                result = resolveScalarTypeWith(plain, .plain, self.options);
+            }
         }
 
-        const plain = self.scanPlainScalar();
-        self.skipToEndOfLine();
-        return resolveScalarType(plain, .plain);
+        if (tag) |t| return try self.applyTag(t, result);
+        return result;
     }
 
     fn parseFlowMapping(self: *Parser) ParseError!Value {
@@ -498,7 +669,7 @@ const Parser = struct {
             self.pos += 1;
         }
         const raw = compat.trimEnd(u8, self.input[start..self.pos], " \t");
-        return resolveScalarType(raw, .plain);
+        return resolveScalarTypeWith(raw, .plain, self.options);
     }
 
     fn parseDoubleQuotedScalar(self: *Parser) ParseError!Value {
@@ -596,6 +767,10 @@ const Parser = struct {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(self.allocator);
 
+        var pending_breaks: u32 = 0;
+        var prev_was_more_indented = false;
+        var first = true;
+
         while (self.pos < self.input.len) {
             var line_spaces: usize = 0;
             const line_start = self.pos;
@@ -604,9 +779,9 @@ const Parser = struct {
                 line_spaces += 1;
             }
 
-            // Empty line.
+            // Blank line (empty or whitespace-only).
             if (self.pos >= self.input.len or self.input[self.pos] == '\n' or self.input[self.pos] == '\r') {
-                out.append(self.allocator, '\n') catch return error.OutOfMemory;
+                pending_breaks += 1;
                 if (self.pos < self.input.len) self.skipLineBreak();
                 continue;
             }
@@ -616,11 +791,23 @@ const Parser = struct {
                 break;
             }
 
-            // Extra indentation.
-            const extra = line_spaces - content_indent;
-            for (0..extra) |_| {
-                out.append(self.allocator, ' ') catch return error.OutOfMemory;
+            const is_more_indented = line_spaces > content_indent;
+
+            if (!first) {
+                if (is_literal) {
+                    for (0..pending_breaks) |_| out.append(self.allocator, '\n') catch return error.OutOfMemory;
+                } else if (prev_was_more_indented or is_more_indented or pending_breaks > 1) {
+                    const breaks: u32 = if (pending_breaks > 1) pending_breaks - 1 else pending_breaks;
+                    for (0..breaks) |_| out.append(self.allocator, '\n') catch return error.OutOfMemory;
+                } else {
+                    out.append(self.allocator, ' ') catch return error.OutOfMemory;
+                }
             }
+            first = false;
+            pending_breaks = 0;
+
+            const extra = line_spaces - content_indent;
+            for (0..extra) |_| out.append(self.allocator, ' ') catch return error.OutOfMemory;
 
             while (self.pos < self.input.len and self.input[self.pos] != '\n' and self.input[self.pos] != '\r') {
                 out.append(self.allocator, self.input[self.pos]) catch return error.OutOfMemory;
@@ -628,14 +815,14 @@ const Parser = struct {
             }
 
             if (self.pos < self.input.len) {
-                if (is_literal) {
-                    out.append(self.allocator, '\n') catch return error.OutOfMemory;
-                } else {
-                    out.append(self.allocator, '\n') catch return error.OutOfMemory;
-                }
+                pending_breaks = 1;
                 self.skipLineBreak();
             }
+
+            prev_was_more_indented = is_more_indented;
         }
+
+        for (0..pending_breaks) |_| out.append(self.allocator, '\n') catch return error.OutOfMemory;
 
         var result = out.toOwnedSlice(self.allocator) catch return error.OutOfMemory;
 
@@ -831,6 +1018,21 @@ const Parser = struct {
         return indent;
     }
 
+    fn checkNoTabInIndent(self: *Parser) ParseError!void {
+        if (!self.options.strict_indent) return;
+        var line_start = self.pos;
+        while (line_start > 0 and self.input[line_start - 1] != '\n' and self.input[line_start - 1] != '\r')
+            line_start -= 1;
+        var p = line_start;
+        var saw_tab = false;
+        while (p < self.input.len and (self.input[p] == ' ' or self.input[p] == '\t')) {
+            if (self.input[p] == '\t') saw_tab = true;
+            p += 1;
+        }
+        if (saw_tab and p < self.input.len and self.input[p] != '\n' and self.input[p] != '\r')
+            return error.InvalidYaml;
+    }
+
     fn columnOf(self: *Parser, pos: usize) i32 {
         var line_start = pos;
         while (line_start > 0 and self.input[line_start - 1] != '\n' and self.input[line_start - 1] != '\r')
@@ -860,7 +1062,7 @@ const Parser = struct {
 
         const plain = self.scanPlainScalar();
         self.skipToEndOfLine();
-        return resolveScalarType(plain, .plain);
+        return resolveScalarTypeWith(plain, .plain, self.options);
     }
 
     fn isBlockMappingKeyAt(self: *Parser, start: usize) bool {
@@ -1024,7 +1226,21 @@ const Parser = struct {
 };
 
 /// Resolve YAML Core Schema types from a plain scalar.
+fn eqlIgnoreCaseAscii(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ac, bc| {
+        const al = if (ac >= 'A' and ac <= 'Z') ac + 32 else ac;
+        const bl = if (bc >= 'A' and bc <= 'Z') bc + 32 else bc;
+        if (al != bl) return false;
+    }
+    return true;
+}
+
 pub fn resolveScalarType(raw: []const u8, style: @import("scanner.zig").ScalarStyle) Value {
+    return resolveScalarTypeWith(raw, style, .{});
+}
+
+pub fn resolveScalarTypeWith(raw: []const u8, style: @import("scanner.zig").ScalarStyle, opts: ParseOptions) Value {
     // Quoted scalars are always strings.
     if (style == .single_quoted or style == .double_quoted or style == .literal or style == .folded) {
         return .{ .string = raw };
@@ -1042,6 +1258,13 @@ pub fn resolveScalarType(raw: []const u8, style: @import("scanner.zig").ScalarSt
         return .{ .boolean = true };
     if (std.mem.eql(u8, raw, "false") or std.mem.eql(u8, raw, "False") or std.mem.eql(u8, raw, "FALSE"))
         return .{ .boolean = false };
+
+    if (opts.yaml_11_booleans) {
+        if (eqlIgnoreCaseAscii(raw, "yes") or eqlIgnoreCaseAscii(raw, "y") or
+            eqlIgnoreCaseAscii(raw, "on")) return .{ .boolean = true };
+        if (eqlIgnoreCaseAscii(raw, "no") or eqlIgnoreCaseAscii(raw, "n") or
+            eqlIgnoreCaseAscii(raw, "off")) return .{ .boolean = false };
+    }
 
     // Float specials.
     if (std.mem.eql(u8, raw, ".inf") or std.mem.eql(u8, raw, ".Inf") or std.mem.eql(u8, raw, ".INF"))
@@ -1260,7 +1483,173 @@ test "parse folded block scalar" {
         \\  line2
         \\
     );
+    try testing.expectEqualStrings("line1 line2\n", val.mapping.get("msg").?.string);
+}
+
+test "parse folded block scalar preserves blank lines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\msg: >
+        \\  line1
+        \\
+        \\  line2
+        \\
+    );
     try testing.expectEqualStrings("line1\nline2\n", val.mapping.get("msg").?.string);
+}
+
+test "parse folded block scalar preserves more-indented lines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\msg: >
+        \\  line1
+        \\    indented
+        \\  line3
+        \\
+    );
+    try testing.expectEqualStrings("line1\n  indented\nline3\n", val.mapping.get("msg").?.string);
+}
+
+test "parse literal block scalar still preserves all newlines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\msg: |
+        \\  line1
+        \\  line2
+        \\
+    );
+    try testing.expectEqualStrings("line1\nline2\n", val.mapping.get("msg").?.string);
+}
+
+test "explicit key with colon on next line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\? simple
+        \\: value
+        \\
+    );
+    try testing.expectEqualStrings("value", val.mapping.get("simple").?.string);
+}
+
+test "explicit key with same-line colon" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\? simple : value
+        \\
+    );
+    try testing.expectEqualStrings("value", val.mapping.get("simple").?.string);
+}
+
+test "tag !!str forces string interpretation" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\value: !!str true
+        \\
+    );
+    try testing.expectEqualStrings("true", val.mapping.get("value").?.string);
+}
+
+test "tag !!int parses quoted integer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\count: !!int "42"
+        \\
+    );
+    try testing.expectEqual(@as(i64, 42), val.mapping.get("count").?.integer);
+}
+
+test "tag !!bool rejects non-bool" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.InvalidYaml, parse(arena.allocator(),
+        \\flag: !!bool maybe
+        \\
+    ));
+}
+
+test "tag !!float coerces integer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\v: !!float 7
+        \\
+    );
+    try testing.expectEqual(@as(f64, 7.0), val.mapping.get("v").?.float);
+}
+
+test "tab in indent allowed by default" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const yaml_input = "items:\n  - a\n  - b\n";
+    const val = try parse(arena.allocator(), yaml_input);
+    try testing.expectEqual(@as(usize, 2), val.mapping.get("items").?.sequence.len);
+}
+
+test "tab in indent rejected with strict_indent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const yaml_input = "items:\n\t- a\n";
+    try testing.expectError(error.InvalidYaml, parseWith(arena.allocator(), yaml_input, .{ .strict_indent = true }));
+}
+
+test "yaml 1.1 booleans off by default" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\enabled: yes
+        \\country: NO
+        \\
+    );
+    try testing.expectEqualStrings("yes", val.mapping.get("enabled").?.string);
+    try testing.expectEqualStrings("NO", val.mapping.get("country").?.string);
+}
+
+test "yaml 1.1 booleans opt-in" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parseWith(arena.allocator(),
+        \\enabled: yes
+        \\debug: off
+        \\flag: On
+        \\
+    , .{ .yaml_11_booleans = true });
+    try testing.expectEqual(true, val.mapping.get("enabled").?.boolean);
+    try testing.expectEqual(false, val.mapping.get("debug").?.boolean);
+    try testing.expectEqual(true, val.mapping.get("flag").?.boolean);
+}
+
+test "anchors are scoped per document" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = parseAll(arena.allocator(),
+        \\---
+        \\base: &shared 1
+        \\---
+        \\copy: *shared
+        \\
+    );
+    try testing.expectError(error.InvalidYaml, result);
+}
+
+test "anchors within a single document still resolve" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const docs = try parseAll(arena.allocator(),
+        \\---
+        \\base: &shared 1
+        \\copy: *shared
+        \\
+    );
+    try testing.expectEqual(@as(usize, 1), docs.len);
+    try testing.expectEqual(@as(i64, 1), docs[0].mapping.get("base").?.integer);
+    try testing.expectEqual(@as(i64, 1), docs[0].mapping.get("copy").?.integer);
 }
 
 test "parse empty document" {

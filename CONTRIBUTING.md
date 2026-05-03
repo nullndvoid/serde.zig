@@ -12,6 +12,20 @@ cd serde.zig
 zig build test
 ```
 
+The repository also includes [mise](https://mise.jdx.dev/) configs for the supported stable Zig versions:
+
+```sh
+mise install
+mise -E zig15 install
+mise -E zig16 install
+
+mise run ci
+mise -E zig15 run ci
+mise -E zig16 run ci
+```
+
+`mise.toml` defaults to Zig 0.16.0. The `zig15` and `zig16` environments select Zig 0.15.2 and 0.16.0 explicitly.
+
 ## Code Style
 
 Run `zig fmt` before committing. The CI enforces formatting.

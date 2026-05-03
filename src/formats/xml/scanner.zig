@@ -151,11 +151,14 @@ pub const Scanner = struct {
             return .{ .cdata = data };
         }
 
-        // Comment: skip.
+        // Comment: skip. Per XML 1.0 §2.5, "--" must not occur within a comment.
         if (self.startsWith("<!--")) {
-            const end = std.mem.indexOf(u8, self.input[self.pos + 4 ..], "-->") orelse
+            const body_start = self.pos + 4;
+            const end = std.mem.indexOf(u8, self.input[body_start..], "-->") orelse
                 return error.UnexpectedEof;
-            self.pos += 4 + end + 3;
+            const body = self.input[body_start .. body_start + end];
+            if (std.mem.indexOf(u8, body, "--") != null) return error.MalformedXml;
+            self.pos = body_start + end + 3;
             return self.scanContent();
         }
 
@@ -290,13 +293,23 @@ pub const Scanner = struct {
                         }
                         break;
                     }
-                    // DOCTYPE.
+                    // DOCTYPE. Per XML 1.0 §2.8 a DOCTYPE may contain an
+                    // internal subset `[...]` which itself contains `>`.
                     if (self.startsWith("<!DOCTYPE")) {
-                        if (std.mem.indexOfScalar(u8, self.input[self.pos..], '>')) |end| {
-                            self.pos += end + 1;
-                            continue;
+                        var p = self.pos + 9;
+                        var in_subset = false;
+                        while (p < self.input.len) : (p += 1) {
+                            const ch = self.input[p];
+                            if (ch == '[') in_subset = true;
+                            if (ch == ']') in_subset = false;
+                            if (ch == '>' and !in_subset) {
+                                self.pos = p + 1;
+                                break;
+                            }
+                        } else {
+                            break;
                         }
-                        break;
+                        continue;
                     }
                     break;
                 },
@@ -367,10 +380,33 @@ test "xml declaration skipped" {
     try testing.expectEqualStrings("hi", text.text);
 }
 
+test "doctype simple skipped" {
+    var s = Scanner{ .input = "<!DOCTYPE root SYSTEM \"foo.dtd\"><root/>" };
+    const tok = try s.next();
+    try testing.expectEqualStrings("root", tok.self_closing);
+}
+
+test "doctype with internal subset skipped" {
+    var s = Scanner{ .input = "<!DOCTYPE root [\n<!ELEMENT root (#PCDATA)>\n]><root/>" };
+    const tok = try s.next();
+    try testing.expectEqualStrings("root", tok.self_closing);
+}
+
+test "processing instruction skipped" {
+    var s = Scanner{ .input = "<?xml-stylesheet href=\"a.xsl\"?><root/>" };
+    const tok = try s.next();
+    try testing.expectEqualStrings("root", tok.self_closing);
+}
+
 test "comment skipped" {
     var s = Scanner{ .input = "<!-- comment --><root/>" };
     const tok = try s.next();
     try testing.expectEqualStrings("root", tok.self_closing);
+}
+
+test "comment containing double-dash rejected" {
+    var s = Scanner{ .input = "<!-- a -- b --><root/>" };
+    try testing.expectError(error.MalformedXml, s.next());
 }
 
 test "CDATA" {
