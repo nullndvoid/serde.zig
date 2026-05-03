@@ -45,13 +45,29 @@ pub const Value = union(enum) {
 
 pub const Mapping = compat.StringArrayHashMap(Value);
 
+pub const ParseOptions = struct {
+    /// When true, recognize YAML 1.1-style boolean literals (yes/no/on/off
+    /// and case variants) as booleans. Default false (YAML 1.2 behavior).
+    /// Beware the "Norway problem": `country: NO` becomes `false`.
+    yaml_11_booleans: bool = false,
+    /// When true, error on tab characters in indentation columns. YAML
+    /// forbids tabs as indentation but the default keeps prior tolerant
+    /// behavior.
+    strict_indent: bool = false,
+};
+
 /// Parse YAML input into a Value tree.
 pub fn parse(allocator: Allocator, input: []const u8) ParseError!Value {
+    return parseWith(allocator, input, .{});
+}
+
+pub fn parseWith(allocator: Allocator, input: []const u8, opts: ParseOptions) ParseError!Value {
     var p = Parser{
         .input = input,
         .pos = 0,
         .allocator = allocator,
         .anchors = std.StringHashMap(Value).init(allocator),
+        .options = opts,
     };
     defer p.anchors.deinit();
     return p.parseDocument();
@@ -60,6 +76,10 @@ pub fn parse(allocator: Allocator, input: []const u8) ParseError!Value {
 /// Parse multi-document YAML input. Documents are separated by `---`
 /// and optionally terminated by `...`.
 pub fn parseAll(allocator: Allocator, input: []const u8) ParseError![]Value {
+    return parseAllWith(allocator, input, .{});
+}
+
+pub fn parseAllWith(allocator: Allocator, input: []const u8, opts: ParseOptions) ParseError![]Value {
     var docs: std.ArrayList(Value) = .empty;
     errdefer {
         for (docs.items) |*v| v.deinit(allocator);
@@ -70,6 +90,7 @@ pub fn parseAll(allocator: Allocator, input: []const u8) ParseError![]Value {
         .pos = 0,
         .allocator = allocator,
         .anchors = std.StringHashMap(Value).init(allocator),
+        .options = opts,
     };
     defer p.anchors.deinit();
 
@@ -100,6 +121,7 @@ const Parser = struct {
     pos: usize,
     allocator: Allocator,
     anchors: std.StringHashMap(Value),
+    options: ParseOptions = .{},
 
     fn parseDocument(self: *Parser) ParseError!Value {
         self.skipWhitespaceAndComments();
@@ -175,7 +197,7 @@ const Parser = struct {
             result = try self.parseSingleQuotedScalar();
         } else {
             const plain = self.scanPlainScalar();
-            result = resolveScalarType(plain, .plain);
+            result = resolveScalarTypeWith(plain, .plain, self.options);
         }
 
         if (anchor_name) |name| {
@@ -350,7 +372,7 @@ const Parser = struct {
 
         const plain = self.scanPlainScalar();
         self.skipToEndOfLine();
-        return resolveScalarType(plain, .plain);
+        return resolveScalarTypeWith(plain, .plain, self.options);
     }
 
     fn parseFlowMapping(self: *Parser) ParseError!Value {
@@ -500,7 +522,7 @@ const Parser = struct {
             self.pos += 1;
         }
         const raw = compat.trimEnd(u8, self.input[start..self.pos], " \t");
-        return resolveScalarType(raw, .plain);
+        return resolveScalarTypeWith(raw, .plain, self.options);
     }
 
     fn parseDoubleQuotedScalar(self: *Parser) ParseError!Value {
@@ -878,7 +900,7 @@ const Parser = struct {
 
         const plain = self.scanPlainScalar();
         self.skipToEndOfLine();
-        return resolveScalarType(plain, .plain);
+        return resolveScalarTypeWith(plain, .plain, self.options);
     }
 
     fn isBlockMappingKeyAt(self: *Parser, start: usize) bool {
@@ -1042,7 +1064,21 @@ const Parser = struct {
 };
 
 /// Resolve YAML Core Schema types from a plain scalar.
+fn eqlIgnoreCaseAscii(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ac, bc| {
+        const al = if (ac >= 'A' and ac <= 'Z') ac + 32 else ac;
+        const bl = if (bc >= 'A' and bc <= 'Z') bc + 32 else bc;
+        if (al != bl) return false;
+    }
+    return true;
+}
+
 pub fn resolveScalarType(raw: []const u8, style: @import("scanner.zig").ScalarStyle) Value {
+    return resolveScalarTypeWith(raw, style, .{});
+}
+
+pub fn resolveScalarTypeWith(raw: []const u8, style: @import("scanner.zig").ScalarStyle, opts: ParseOptions) Value {
     // Quoted scalars are always strings.
     if (style == .single_quoted or style == .double_quoted or style == .literal or style == .folded) {
         return .{ .string = raw };
@@ -1060,6 +1096,13 @@ pub fn resolveScalarType(raw: []const u8, style: @import("scanner.zig").ScalarSt
         return .{ .boolean = true };
     if (std.mem.eql(u8, raw, "false") or std.mem.eql(u8, raw, "False") or std.mem.eql(u8, raw, "FALSE"))
         return .{ .boolean = false };
+
+    if (opts.yaml_11_booleans) {
+        if (eqlIgnoreCaseAscii(raw, "yes") or eqlIgnoreCaseAscii(raw, "y") or
+            eqlIgnoreCaseAscii(raw, "on")) return .{ .boolean = true };
+        if (eqlIgnoreCaseAscii(raw, "no") or eqlIgnoreCaseAscii(raw, "n") or
+            eqlIgnoreCaseAscii(raw, "off")) return .{ .boolean = false };
+    }
 
     // Float specials.
     if (std.mem.eql(u8, raw, ".inf") or std.mem.eql(u8, raw, ".Inf") or std.mem.eql(u8, raw, ".INF"))
@@ -1317,6 +1360,32 @@ test "parse literal block scalar still preserves all newlines" {
         \\
     );
     try testing.expectEqualStrings("line1\nline2\n", val.mapping.get("msg").?.string);
+}
+
+test "yaml 1.1 booleans off by default" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parse(arena.allocator(),
+        \\enabled: yes
+        \\country: NO
+        \\
+    );
+    try testing.expectEqualStrings("yes", val.mapping.get("enabled").?.string);
+    try testing.expectEqualStrings("NO", val.mapping.get("country").?.string);
+}
+
+test "yaml 1.1 booleans opt-in" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const val = try parseWith(arena.allocator(),
+        \\enabled: yes
+        \\debug: off
+        \\flag: On
+        \\
+    , .{ .yaml_11_booleans = true });
+    try testing.expectEqual(true, val.mapping.get("enabled").?.boolean);
+    try testing.expectEqual(false, val.mapping.get("debug").?.boolean);
+    try testing.expectEqual(true, val.mapping.get("flag").?.boolean);
 }
 
 test "anchors are scoped per document" {

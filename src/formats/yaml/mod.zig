@@ -17,9 +17,11 @@ const options = @import("../../core/options.zig");
 pub const Serializer = serializer_mod.Serializer;
 pub const Deserializer = deserializer_mod.Deserializer;
 pub const Options = serializer_mod.Options;
+pub const DeserializeOptions = parser_mod.ParseOptions;
 pub const Value = parser_mod.Value;
 pub const Mapping = parser_mod.Mapping;
 pub const parse = parser_mod.parse;
+pub const parseWith = parser_mod.parseWith;
 
 /// Serialize any value to a YAML byte slice. Caller owns the returned memory.
 pub fn toSlice(allocator: std.mem.Allocator, value: anytype) ![]u8 {
@@ -122,18 +124,20 @@ pub fn fromReaderSchema(comptime T: type, allocator: std.mem.Allocator, reader: 
 /// Deserialize a value of type T from a YAML byte slice.
 /// Allocates copies of all strings and slices. Use an ArenaAllocator for easy cleanup.
 pub fn fromSlice(comptime T: type, allocator: std.mem.Allocator, input: []const u8) !T {
-    const val = try parser_mod.parse(allocator, input);
+    return fromSliceWith(T, allocator, input, .{});
+}
+
+pub fn fromSliceWith(comptime T: type, allocator: std.mem.Allocator, input: []const u8, opts: DeserializeOptions) !T {
+    const val = try parser_mod.parseWith(allocator, input, opts);
 
     const k = comptime kind_mod.typeKind(T);
 
-    // Top-level struct: create Deserializer with the mapping.
     if (k == .@"struct") {
         if (val != .mapping) return error.WrongType;
         var deser = Deserializer.init(&val);
         return core_deserialize.deserialize(T, allocator, &deser, .{});
     }
 
-    // Other types: wrap in ValueDeserializer.
     var deser = Deserializer.init(&val);
     return switch (k) {
         .bool => deser.deserializeBool(),
