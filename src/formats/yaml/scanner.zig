@@ -47,7 +47,7 @@ pub const Scanner = struct {
     line: usize = 1,
     column: usize = 0,
     allocator: Allocator,
-    indent_stack: [64]i32 = [_]i32{-1} ++ [_]i32{0} ** 63,
+    indent_stack: [64]i32 = [_]i32{-1} ++ ([_]i32{0} ** 63),
     indent_depth: usize = 0,
     // Pending synthetic tokens (mapping_end / sequence_end) from indent drops.
     pending_ends: usize = 0,
