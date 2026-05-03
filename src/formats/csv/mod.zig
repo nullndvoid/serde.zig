@@ -146,7 +146,7 @@ pub fn fromSliceWithSchema(comptime T: type, allocator: std.mem.Allocator, input
         defer allocator.free(row);
         if (row.len == 0) continue;
 
-        var deser = Deserializer.init(header_fields, row);
+        var deser = Deserializer.initWith(header_fields, row, .{ .strict_field_count = dialect.strict_field_count });
         const elem = try core_deserialize.deserializeSchema(ElemType, allocator, &deser, schema, .{});
         items.append(allocator, elem) catch return error.OutOfMemory;
     }
@@ -215,7 +215,7 @@ pub fn fromSliceWith(comptime T: type, allocator: std.mem.Allocator, input: []co
         defer allocator.free(row);
         if (row.len == 0) continue; // skip empty rows
 
-        var deser = Deserializer.init(header_fields, row);
+        var deser = Deserializer.initWith(header_fields, row, .{ .strict_field_count = dialect.strict_field_count });
         const elem = try core_deserialize.deserialize(ElemType, allocator, &deser, .{});
         items.append(allocator, elem) catch return error.OutOfMemory;
     }
@@ -270,6 +270,7 @@ pub fn StreamingDeserializer(comptime T: type) type {
         scanner: Scanner,
         header_fields: []const []const u8,
         allocator: std.mem.Allocator,
+        strict_field_count: bool,
 
         const Self = @This();
 
@@ -282,6 +283,7 @@ pub fn StreamingDeserializer(comptime T: type) type {
                     .scanner = scanner,
                     .header_fields = &.{},
                     .allocator = allocator,
+                    .strict_field_count = dialect.strict_field_count,
                 };
                 defer allocator.free(row);
                 var hdrs: std.ArrayList([]const u8) = .empty;
@@ -303,6 +305,7 @@ pub fn StreamingDeserializer(comptime T: type) type {
                 .scanner = scanner,
                 .header_fields = header_fields,
                 .allocator = allocator,
+                .strict_field_count = dialect.strict_field_count,
             };
         }
 
@@ -311,7 +314,7 @@ pub fn StreamingDeserializer(comptime T: type) type {
             defer self.allocator.free(row);
             if (row.len == 0) return null;
 
-            var deser = Deserializer.init(self.header_fields, row);
+            var deser = Deserializer.initWith(self.header_fields, row, .{ .strict_field_count = self.strict_field_count });
             return try core_deserialize.deserialize(ElemType, self.allocator, &deser, .{});
         }
 
@@ -700,9 +703,19 @@ test "deserialize error: missing column data" {
     const Row = struct { x: i32, y: i32 };
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    // Header has x and y, but data row only has one field — empty field parses as InvalidNumber.
+    // Header has x and y, but data row only has one field. Strict mode (default) rejects.
     const result = fromSlice([]const Row, arena.allocator(), "x,y\n42\n");
-    try testing.expectError(error.InvalidNumber, result);
+    try testing.expectError(error.FieldCountMismatch, result);
+}
+
+test "deserialize lenient field count fills missing as empty" {
+    const Row = struct { x: i32, y: ?i32 };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const rows = try fromSliceWith([]const Row, arena.allocator(), "x,y\n42\n", .{ .strict_field_count = false });
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqual(@as(i32, 42), rows[0].x);
+    try testing.expectEqual(@as(?i32, null), rows[0].y);
 }
 
 test "deserialize error: type mismatch" {
