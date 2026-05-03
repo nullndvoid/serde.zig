@@ -42,12 +42,14 @@ pub const ScanError = error{
 };
 
 pub const Scanner = struct {
+    const max_indent_depth = 64;
+
     input: []const u8,
     pos: usize = 0,
     line: usize = 1,
     column: usize = 0,
     allocator: Allocator,
-    indent_stack: [64]i32 = initial_indent_stack,
+    indent_stack: [max_indent_depth]i32 = initIndentStack(),
     indent_depth: usize = 0,
     // Pending synthetic tokens (mapping_end / sequence_end) from indent drops.
     pending_ends: usize = 0,
@@ -56,25 +58,25 @@ pub const Scanner = struct {
     done: bool = false,
     had_document_start: bool = false,
     // Track context: in a mapping or sequence at each indent level.
-    context_stack: [64]Context = initial_context_stack,
+    context_stack: [max_indent_depth]Context = initContextStack(),
 
     const Context = enum { none, mapping, sequence };
     const PendingType = enum { none, mapping_end, sequence_end, mixed };
 
-    const initial_indent_stack: [64]i32 = blk: {
-        var arr: [64]i32 = undefined;
-        arr[0] = -1;
+    fn initIndentStack() [max_indent_depth]i32 {
+        var stack: [max_indent_depth]i32 = undefined;
+        stack[0] = -1;
         var i: usize = 1;
-        while (i < 64) : (i += 1) arr[i] = 0;
-        break :blk arr;
-    };
+        while (i < stack.len) : (i += 1) stack[i] = 0;
+        return stack;
+    }
 
-    const initial_context_stack: [64]Context = blk: {
-        var arr: [64]Context = undefined;
+    fn initContextStack() [max_indent_depth]Context {
+        var stack: [max_indent_depth]Context = undefined;
         var i: usize = 0;
-        while (i < 64) : (i += 1) arr[i] = .none;
-        break :blk arr;
-    };
+        while (i < stack.len) : (i += 1) stack[i] = .none;
+        return stack;
+    }
 
     pub fn init(allocator: Allocator, input: []const u8) Scanner {
         return .{ .input = input, .allocator = allocator };
