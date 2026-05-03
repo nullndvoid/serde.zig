@@ -86,6 +86,8 @@ pub fn parseAll(allocator: Allocator, input: []const u8) ParseError![]Value {
             continue;
         }
 
+        // YAML 1.2 §3.2.2.2: anchors are scoped to the document they appear in.
+        p.anchors.clearRetainingCapacity();
         const doc = try p.parseDocument();
         docs.append(allocator, doc) catch return error.OutOfMemory;
     }
@@ -1261,6 +1263,33 @@ test "parse folded block scalar" {
         \\
     );
     try testing.expectEqualStrings("line1\nline2\n", val.mapping.get("msg").?.string);
+}
+
+test "anchors are scoped per document" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = parseAll(arena.allocator(),
+        \\---
+        \\base: &shared 1
+        \\---
+        \\copy: *shared
+        \\
+    );
+    try testing.expectError(error.InvalidYaml, result);
+}
+
+test "anchors within a single document still resolve" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const docs = try parseAll(arena.allocator(),
+        \\---
+        \\base: &shared 1
+        \\copy: *shared
+        \\
+    );
+    try testing.expectEqual(@as(usize, 1), docs.len);
+    try testing.expectEqual(@as(i64, 1), docs[0].mapping.get("base").?.integer);
+    try testing.expectEqual(@as(i64, 1), docs[0].mapping.get("copy").?.integer);
 }
 
 test "parse empty document" {
