@@ -55,14 +55,6 @@ pub const Scanner = struct {
             't' => return self.scanLiteral("true", .true_lit),
             'f' => return self.scanLiteral("false", .false_lit),
             'n' => return self.scanLiteral("null", .null_lit),
-            ',' => {
-                self.pos += 1;
-                return self.next();
-            },
-            ':' => {
-                self.pos += 1;
-                return self.next();
-            },
             else => return error.UnexpectedToken,
         }
     }
@@ -74,39 +66,79 @@ pub const Scanner = struct {
         return tok;
     }
 
+    /// Consume a `:` separator between a key and value in an object. Errors
+    /// if the next non-whitespace byte is not `:`.
+    pub fn expectColon(self: *Scanner) ScanError!void {
+        self.skipWhitespace();
+        if (self.pos >= self.input.len) return error.UnexpectedEof;
+        if (self.input[self.pos] != ':') return error.UnexpectedToken;
+        self.pos += 1;
+    }
+
+    pub const ContainerStep = enum { end, more };
+
+    /// After reading an element (or before reading the first element), advance
+    /// to the next position in a `[...]` / `{...}` container. Returns `.end`
+    /// when the container terminator was consumed, `.more` after consuming a
+    /// `,` separator. Trailing commas (`,` immediately followed by terminator)
+    /// are rejected as `error.UnexpectedToken`.
+    pub fn finishContainer(self: *Scanner, end: u8) ScanError!ContainerStep {
+        self.skipWhitespace();
+        if (self.pos >= self.input.len) return error.UnexpectedEof;
+        const c = self.input[self.pos];
+        if (c == end) {
+            self.pos += 1;
+            return .end;
+        }
+        if (c == ',') {
+            self.pos += 1;
+            self.skipWhitespace();
+            if (self.pos >= self.input.len) return error.UnexpectedEof;
+            if (self.input[self.pos] == end) return error.UnexpectedToken;
+            return .more;
+        }
+        return error.UnexpectedToken;
+    }
+
+    /// At the start of a container, peek whether the very next non-whitespace
+    /// byte is the terminator (empty container). Does not consume.
+    pub fn isContainerEmpty(self: *Scanner, end: u8) ScanError!bool {
+        self.skipWhitespace();
+        if (self.pos >= self.input.len) return error.UnexpectedEof;
+        return self.input[self.pos] == end;
+    }
+
     /// Skip an entire value subtree (object, array, or single token).
     pub fn skipValue(self: *Scanner) ScanError!void {
         const tok = try self.next();
         switch (tok) {
             .object_begin => {
+                if (try self.isContainerEmpty('}')) {
+                    self.pos += 1;
+                    return;
+                }
                 while (true) {
-                    self.skipWhitespace();
-                    if (self.pos >= self.input.len) return error.UnexpectedEof;
-                    if (self.input[self.pos] == '}') {
-                        self.pos += 1;
-                        return;
-                    }
-                    // Skip comma.
-                    if (self.input[self.pos] == ',') self.pos += 1;
-                    // key
-                    _ = try self.next();
-                    // colon
-                    self.skipWhitespace();
-                    if (self.pos < self.input.len and self.input[self.pos] == ':') self.pos += 1;
-                    // value
+                    const key_tok = try self.next();
+                    if (key_tok != .string) return error.UnexpectedToken;
+                    try self.expectColon();
                     try self.skipValue();
+                    switch (try self.finishContainer('}')) {
+                        .end => return,
+                        .more => {},
+                    }
                 }
             },
             .array_begin => {
+                if (try self.isContainerEmpty(']')) {
+                    self.pos += 1;
+                    return;
+                }
                 while (true) {
-                    self.skipWhitespace();
-                    if (self.pos >= self.input.len) return error.UnexpectedEof;
-                    if (self.input[self.pos] == ']') {
-                        self.pos += 1;
-                        return;
-                    }
-                    if (self.input[self.pos] == ',') self.pos += 1;
                     try self.skipValue();
+                    switch (try self.finishContainer(']')) {
+                        .end => return,
+                        .more => {},
+                    }
                 }
             },
             else => {}, // scalar token already consumed
@@ -220,26 +252,31 @@ test "scan simple object" {
     var s = Scanner{ .input = "{\"a\": 1}" };
     try testing.expectEqual(Token.object_begin, try s.next());
     try testing.expectEqualStrings("a", (try s.next()).string);
+    try s.expectColon();
     try testing.expectEqualStrings("1", (try s.next()).number);
-    try testing.expectEqual(Token.object_end, try s.next());
+    try testing.expectEqual(Scanner.ContainerStep.end, try s.finishContainer('}'));
 }
 
 test "scan array" {
     var s = Scanner{ .input = "[1, 2, 3]" };
     try testing.expectEqual(Token.array_begin, try s.next());
     try testing.expectEqualStrings("1", (try s.next()).number);
+    try testing.expectEqual(Scanner.ContainerStep.more, try s.finishContainer(']'));
     try testing.expectEqualStrings("2", (try s.next()).number);
+    try testing.expectEqual(Scanner.ContainerStep.more, try s.finishContainer(']'));
     try testing.expectEqualStrings("3", (try s.next()).number);
-    try testing.expectEqual(Token.array_end, try s.next());
+    try testing.expectEqual(Scanner.ContainerStep.end, try s.finishContainer(']'));
 }
 
 test "scan literals" {
     var s = Scanner{ .input = "[true, false, null]" };
     try testing.expectEqual(Token.array_begin, try s.next());
     try testing.expectEqual(Token.true_lit, try s.next());
+    try testing.expectEqual(Scanner.ContainerStep.more, try s.finishContainer(']'));
     try testing.expectEqual(Token.false_lit, try s.next());
+    try testing.expectEqual(Scanner.ContainerStep.more, try s.finishContainer(']'));
     try testing.expectEqual(Token.null_lit, try s.next());
-    try testing.expectEqual(Token.array_end, try s.next());
+    try testing.expectEqual(Scanner.ContainerStep.end, try s.finishContainer(']'));
 }
 
 test "scan string with escapes" {
@@ -261,10 +298,29 @@ test "skip value" {
     var s = Scanner{ .input = "{\"a\": {\"b\": [1,2,3]}, \"c\": 4}" };
     try testing.expectEqual(Token.object_begin, try s.next());
     try testing.expectEqualStrings("a", (try s.next()).string);
+    try s.expectColon();
     try s.skipValue(); // skip the nested {"b": [1,2,3]}
+    try testing.expectEqual(Scanner.ContainerStep.more, try s.finishContainer('}'));
     try testing.expectEqualStrings("c", (try s.next()).string);
+    try s.expectColon();
     try testing.expectEqualStrings("4", (try s.next()).number);
-    try testing.expectEqual(Token.object_end, try s.next());
+    try testing.expectEqual(Scanner.ContainerStep.end, try s.finishContainer('}'));
+}
+
+test "trailing comma rejected in array" {
+    var s = Scanner{ .input = "[1,]" };
+    try testing.expectEqual(Token.array_begin, try s.next());
+    try testing.expectEqualStrings("1", (try s.next()).number);
+    try testing.expectError(error.UnexpectedToken, s.finishContainer(']'));
+}
+
+test "trailing comma rejected in object" {
+    var s = Scanner{ .input = "{\"a\":1,}" };
+    try testing.expectEqual(Token.object_begin, try s.next());
+    try testing.expectEqualStrings("a", (try s.next()).string);
+    try s.expectColon();
+    try testing.expectEqualStrings("1", (try s.next()).number);
+    try testing.expectError(error.UnexpectedToken, s.finishContainer('}'));
 }
 
 test "unexpected eof" {

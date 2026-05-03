@@ -170,6 +170,7 @@ pub const Deserializer = struct {
         const key_tok = try self.scanner.next();
         if (key_tok != .string) return error.WrongType;
         const variant_name = key_tok.string;
+        try self.scanner.expectColon();
 
         inline for (info.fields) |field| {
             if (std.mem.eql(u8, variant_name, field.name)) {
@@ -208,14 +209,18 @@ pub const Deserializer = struct {
         var items: std.ArrayList(Child) = .empty;
         errdefer items.deinit(allocator);
 
+        if (try self.scanner.isContainerEmpty(']')) {
+            self.scanner.pos += 1;
+            return items.toOwnedSlice(allocator) catch return error.OutOfMemory;
+        }
+
         while (true) {
-            const peek = try self.scanner.peek();
-            if (peek == .array_end) {
-                _ = try self.scanner.next();
-                break;
-            }
             const elem = try core_deserialize.deserialize(Child, allocator, self, .{});
             items.append(allocator, elem) catch return error.OutOfMemory;
+            switch (try self.scanner.finishContainer(']')) {
+                .end => break,
+                .more => {},
+            }
         }
 
         return items.toOwnedSlice(allocator) catch return error.OutOfMemory;
@@ -236,18 +241,27 @@ pub const MapAccess = struct {
     scanner: *Scanner,
     borrow_strings: bool = false,
     options: Options = .{},
+    at_start: bool = true,
 
     pub const Error = DeserializeError;
 
     pub fn nextKey(self: *MapAccess, allocator: Allocator) Error!?[]const u8 {
-        const tok = try self.scanner.peek();
-        if (tok == .object_end) {
-            _ = try self.scanner.next();
-            return null;
+        if (self.at_start) {
+            self.at_start = false;
+            if (try self.scanner.isContainerEmpty('}')) {
+                self.scanner.pos += 1;
+                return null;
+            }
+        } else {
+            switch (try self.scanner.finishContainer('}')) {
+                .end => return null,
+                .more => {},
+            }
         }
         const key_tok = try self.scanner.next();
         switch (key_tok) {
             .string => |raw| {
+                try self.scanner.expectColon();
                 if (Scanner.stringHasEscapes(raw)) {
                     if (self.borrow_strings) return error.InvalidEscape;
                     return try unescapeString(allocator, raw);
@@ -277,14 +291,22 @@ pub const MapAccess = struct {
 pub const SeqAccess = struct {
     scanner: *Scanner,
     options: Options = .{},
+    at_start: bool = true,
 
     pub const Error = DeserializeError;
 
     pub fn nextElement(self: *SeqAccess, comptime T: type, allocator: Allocator) Error!?T {
-        const tok = try self.scanner.peek();
-        if (tok == .array_end) {
-            _ = try self.scanner.next();
-            return null;
+        if (self.at_start) {
+            self.at_start = false;
+            if (try self.scanner.isContainerEmpty(']')) {
+                self.scanner.pos += 1;
+                return null;
+            }
+        } else {
+            switch (try self.scanner.finishContainer(']')) {
+                .end => return null,
+                .more => {},
+            }
         }
         var deser = Deserializer{ .scanner = self.scanner.*, .options = self.options };
         const result = try core_deserialize.deserialize(T, allocator, &deser, .{});

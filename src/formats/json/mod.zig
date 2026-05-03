@@ -620,6 +620,34 @@ test "roundtrip StringHashMap" {
     try testing.expectEqual(@as(i32, 2), result.get("b").?);
 }
 
+test "json trailing comma in array rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.UnexpectedToken, fromSlice([]const i32, arena.allocator(), "[1,2,]"));
+}
+
+test "json trailing comma in object rejected" {
+    const Cfg = struct { a: i32 };
+    try testing.expectError(error.UnexpectedToken, fromSlice(Cfg, testing.allocator, "{\"a\":1,}"));
+}
+
+test "json missing comma between elements rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.UnexpectedToken, fromSlice([]const i32, arena.allocator(), "[1 2]"));
+}
+
+test "json missing colon rejected" {
+    const Cfg = struct { a: i32 };
+    try testing.expectError(error.UnexpectedToken, fromSlice(Cfg, testing.allocator, "{\"a\" 1}"));
+}
+
+test "json double comma rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.UnexpectedToken, fromSlice([]const i32, arena.allocator(), "[1,,2]"));
+}
+
 test "json unescaped control char in string is rejected" {
     const input = "{\"x\":\"a\x01b\"}";
     const Cfg = struct { x: []const u8 };
