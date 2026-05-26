@@ -133,3 +133,189 @@ test "toon quoted dotted keys do not expand" {
     try testing.expectEqualStrings("a.b", value.object[0].key);
     try testing.expectEqual(serde.toon.Value{ .uint = 1 }, value.object[0].value);
 }
+
+test "toon strict arrays allow blank after completed count only" {
+    const Root = struct {
+        items: []const []const u8,
+        next: u32,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const parsed = try serde.toon.fromSlice(Root, arena.allocator(),
+        \\items[2]:
+        \\  - a
+        \\  - b
+        \\
+        \\next: 1
+    );
+    try testing.expectEqual(@as(usize, 2), parsed.items.len);
+    try testing.expectEqualStrings("b", parsed.items[1]);
+    try testing.expectEqual(@as(u32, 1), parsed.next);
+
+    try testing.expectError(error.InvalidSyntax, serde.toon.fromSlice(Root, testing.allocator,
+        \\items[2]:
+        \\  - a
+        \\
+        \\  - b
+        \\next: 1
+    ));
+
+    var non_strict_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer non_strict_arena.deinit();
+    const non_strict = try serde.toon.fromSliceWith(Root, non_strict_arena.allocator(),
+        \\items[2]:
+        \\  - a
+        \\
+        \\  - b
+        \\next: 1
+    , .{ .strict = false });
+    try testing.expectEqual(@as(usize, 2), non_strict.items.len);
+}
+
+test "toon malformed headers fall through only in non strict mode" {
+    const value = try serde.toon.parse(testing.allocator,
+        \\foo[1][bar]: 10
+        \\foo[2]extra: a,b
+    , .{ .strict = false });
+    defer value.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), value.object.len);
+    try testing.expectEqualStrings("foo[1][bar]", value.object[0].key);
+    try testing.expectEqual(serde.toon.Value{ .uint = 10 }, value.object[0].value);
+    try testing.expectEqualStrings("foo[2]extra", value.object[1].key);
+    try testing.expectEqualStrings("a,b", value.object[1].value.string);
+
+    try testing.expectError(error.InvalidHeader, serde.toon.validate(testing.allocator, "foo[1][bar]: 10", .{}));
+    try testing.expectError(error.InvalidHeader, serde.toon.validate(testing.allocator, "foo[2]extra: a,b", .{}));
+}
+
+test "toon strict rejects malformed array headers" {
+    const cases = [_][]const u8{
+        "foo[1] : a",
+        "foo[1]extra: a",
+        "foo[x]: a",
+        "foo[-1]: a",
+        "foo[01]: a",
+    };
+    for (cases) |case| {
+        try testing.expectError(error.InvalidHeader, serde.toon.validate(testing.allocator, case, .{}));
+    }
+}
+
+test "toon strict rejects delimiter mismatch in tabular header fields" {
+    try testing.expectError(error.InvalidHeader, serde.toon.validate(testing.allocator,
+        \\rows[1|]{a,b}:
+        \\  1|2
+    , .{}));
+}
+
+test "toon root arrays reject trailing non blank lines" {
+    try testing.expectError(error.InvalidSyntax, serde.toon.validate(testing.allocator,
+        \\[1]: a
+        \\extra: b
+    , .{}));
+}
+
+test "toon list item arrays encode canonical headers" {
+    const Child = struct { id: u32, name: []const u8 };
+    const Empty = struct {};
+    const PrimitiveItem = struct { tags: []const []const u8, name: []const u8 };
+    const TabularItem = struct { kids: []const Child, name: []const u8 };
+    const EmptyArrayItem = struct { tags: []const []const u8, name: []const u8 };
+    const EmptyObjectsItem = struct { kids: []const Empty, name: []const u8 };
+
+    const primitive_tags: []const []const u8 = &.{ "a", "b" };
+    const primitive_items: []const PrimitiveItem = &.{.{ .tags = primitive_tags, .name = "one" }};
+    const primitive = try serde.toon.toSlice(testing.allocator, .{ .items = primitive_items });
+    defer testing.allocator.free(primitive);
+    try testing.expectEqualStrings(
+        \\items[1]:
+        \\  - tags[2]: a,b
+        \\    name: one
+    , primitive);
+
+    const kids: []const Child = &.{ .{ .id = 1, .name = "Ada" }, .{ .id = 2, .name = "Bob" } };
+    const tabular_items: []const TabularItem = &.{.{ .kids = kids, .name = "team" }};
+    const tabular = try serde.toon.toSlice(testing.allocator, .{ .items = tabular_items });
+    defer testing.allocator.free(tabular);
+    try testing.expectEqualStrings(
+        \\items[1]:
+        \\  - kids[2]{id,name}:
+        \\      1,Ada
+        \\      2,Bob
+        \\    name: team
+    , tabular);
+
+    const empty_tags: []const []const u8 = &.{};
+    const empty_array_items: []const EmptyArrayItem = &.{.{ .tags = empty_tags, .name = "none" }};
+    const empty_array = try serde.toon.toSlice(testing.allocator, .{ .items = empty_array_items });
+    defer testing.allocator.free(empty_array);
+    try testing.expectEqualStrings(
+        \\items[1]:
+        \\  - tags: []
+        \\    name: none
+    , empty_array);
+
+    const empty_kids: []const Empty = &.{ .{}, .{} };
+    const empty_object_items: []const EmptyObjectsItem = &.{.{ .kids = empty_kids, .name = "empty" }};
+    const empty_objects = try serde.toon.toSlice(testing.allocator, .{ .items = empty_object_items });
+    defer testing.allocator.free(empty_objects);
+    try testing.expectEqualStrings(
+        \\items[1]:
+        \\  - kids[2]:
+        \\      -
+        \\      -
+        \\    name: empty
+    , empty_objects);
+}
+
+test "toon path expansion conflicts and last write wins" {
+    try testing.expectError(error.ExpansionConflict, serde.toon.validate(testing.allocator,
+        \\a: 1
+        \\a.b: 2
+    , .{ .expand_paths = .safe }));
+
+    const overwritten = try serde.toon.parse(testing.allocator,
+        \\a.b: 1
+        \\a: 2
+    , .{ .strict = false, .expand_paths = .safe });
+    defer overwritten.deinit(testing.allocator);
+    try testing.expectEqual(serde.toon.Value{ .uint = 2 }, overwritten.object[0].value);
+
+    const expanded = try serde.toon.parse(testing.allocator,
+        \\a: 2
+        \\a.b: 1
+    , .{ .strict = false, .expand_paths = .safe });
+    defer expanded.deinit(testing.allocator);
+    try testing.expectEqualStrings("a", expanded.object[0].key);
+    try testing.expectEqualStrings("b", expanded.object[0].value.object[0].key);
+    try testing.expectEqual(serde.toon.Value{ .uint = 1 }, expanded.object[0].value.object[0].value);
+}
+
+test "toon number and string edge cases" {
+    const Numbers = struct {
+        small: f64,
+        big: f64,
+        neg_zero: f64,
+        quoted: []const u8,
+    };
+    const bytes = try serde.toon.toSlice(testing.allocator, Numbers{
+        .small = 0.000001,
+        .big = 1e20,
+        .neg_zero = -0.0,
+        .quoted = "true",
+    });
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualStrings(
+        \\small: 0.000001
+        \\big: 100000000000000000000
+        \\neg_zero: 0
+        \\quoted: "true"
+    , bytes);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const ambiguous = try serde.toon.fromSlice([]const u8, arena.allocator(), "\"001\"");
+    try testing.expectEqualStrings("001", ambiguous);
+}
