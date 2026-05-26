@@ -22,6 +22,12 @@ pub fn StringArrayHashMap(comptime V: type) type {
     return std.StringArrayHashMapUnmanaged(V);
 }
 
+pub fn staticBitSetEmpty(comptime size: usize) std.StaticBitSet(size) {
+    const BitSet = std.StaticBitSet(size);
+    if (@hasDecl(BitSet, "empty")) return BitSet.empty;
+    return BitSet.initEmpty();
+}
+
 pub fn intToEnum(comptime T: type, value: anytype) ?T {
     return std.meta.intToEnum(T, value) catch null;
 }

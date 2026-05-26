@@ -206,7 +206,7 @@ fn deserializeStructFieldsSchema(
     const info = @typeInfo(T).@"struct";
 
     var result: T = undefined;
-    var fields_seen = std.StaticBitSet(info.fields.len).initEmpty();
+    var fields_seen = compat.staticBitSetEmpty(info.fields.len);
     errdefer freeStructFields(T, &result, fields_seen, allocator);
 
     inline for (info.fields, 0..) |field, i| {
@@ -412,7 +412,7 @@ fn deserializeUnionInternalSchema(
                 @compileError("Internal tagging requires struct payloads for " ++ field.name);
 
             var result: field.type = undefined;
-            var fields_seen = std.StaticBitSet(payload_info.@"struct".fields.len).initEmpty();
+            var fields_seen = compat.staticBitSetEmpty(payload_info.@"struct".fields.len);
             errdefer freeStructFields(field.type, &result, fields_seen, allocator);
 
             inline for (payload_info.@"struct".fields, 0..) |sf, i| {

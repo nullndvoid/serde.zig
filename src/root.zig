@@ -15,6 +15,7 @@
 //! | `xml`    | XML         |
 //! | `csv`    | CSV         |
 //! | `zon`    | ZON         |
+//! | `toon`   | TOON        |
 //!
 //! ## Quick Start
 //!
@@ -33,6 +34,7 @@ pub const csv = @import("formats/csv/mod.zig");
 pub const xml = @import("formats/xml/mod.zig");
 pub const yaml = @import("formats/yaml/mod.zig");
 pub const zon = @import("formats/zon/mod.zig");
+pub const toon = @import("formats/toon/mod.zig");
 
 pub const serialize = core.serialize;
 pub const serializeWith = core.serializeWith;
@@ -99,4 +101,9 @@ test {
     _ = zon;
     _ = @import("formats/zon/serializer.zig");
     _ = @import("formats/zon/deserializer.zig");
+    _ = toon;
+    _ = @import("formats/toon/value.zig");
+    _ = @import("formats/toon/parser.zig");
+    _ = @import("formats/toon/serializer.zig");
+    _ = @import("formats/toon/deserializer.zig");
 }
