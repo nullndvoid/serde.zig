@@ -204,8 +204,12 @@ const Renderer = struct {
                                 } else if (isPrimitiveArray(arr)) {
                                     try self.writeHeaderSuffix(arr.len, null, true);
                                     try self.writeInlineArray(arr);
+                                } else if (try tabularFields(self.allocator, arr)) |fields| {
+                                    defer self.allocator.free(fields);
+                                    try self.writeHeaderSuffix(arr.len, fields, false);
+                                    for (arr) |row| try self.writeTableRow(row.object, fields, depth + 2);
                                 } else {
-                                    self.writer.writeByte(':') catch return error.WriteFailed;
+                                    try self.writeHeaderSuffix(arr.len, null, false);
                                     try self.renderExpandedItems(arr, depth + 2);
                                 }
                             },
