@@ -59,6 +59,7 @@ pub fn build(b: *std.Build) void {
         "test/edge_cases_test.zig",
         "test/adversarial_test.zig",
         "test/serde_options_test.zig",
+        "test/toon_test.zig",
     };
 
     for (extra_test_sources) |src| {
