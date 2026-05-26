@@ -58,7 +58,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8, opts: Options) Par
 
     if (opts.expand_paths == .safe and value == .object) {
         const expanded = try expandObject(allocator, value.object, opts.strict);
-        allocator.free(value.object);
+        value.deinit(allocator);
         value = .{ .object = expanded };
     }
     return value;
@@ -709,14 +709,20 @@ fn parseHex4(hex: *const [4]u8) ?u16 {
 
 fn expandObject(allocator: std.mem.Allocator, entries: []Entry, strict: bool) ParseError![]Entry {
     var out: std.ArrayList(Entry) = .empty;
-    errdefer deinitEntries(allocator, out.items);
+    errdefer {
+        deinitEntries(allocator, out.items);
+        out.deinit(allocator);
+    }
 
     for (entries) |entry| {
         if (!entry.quoted and std.mem.indexOfScalar(u8, entry.key, '.') != null and allIdentifierSegments(entry.key)) {
-            try insertPath(allocator, &out, entry.key, entry.value, strict);
-            allocator.free(entry.key);
+            try insertPath(allocator, &out, entry.key, try entry.value.clone(allocator), strict);
         } else {
-            try appendEntry(allocator, &out, entry, strict);
+            try appendExpandedEntry(allocator, &out, .{
+                .key = try value_mod.dupe(allocator, entry.key),
+                .value = try entry.value.clone(allocator),
+                .quoted = entry.quoted,
+            }, strict);
         }
     }
     return out.toOwnedSlice(allocator);
@@ -725,7 +731,7 @@ fn expandObject(allocator: std.mem.Allocator, entries: []Entry, strict: bool) Pa
 fn insertPath(allocator: std.mem.Allocator, entries: *std.ArrayList(Entry), path: []const u8, leaf: Value, strict: bool) ParseError!void {
     const dot = std.mem.indexOfScalar(u8, path, '.');
     if (dot == null) {
-        try appendEntry(allocator, entries, .{
+        try appendExpandedEntry(allocator, entries, .{
             .key = try value_mod.dupe(allocator, path),
             .value = leaf,
             .quoted = false,
@@ -737,27 +743,60 @@ fn insertPath(allocator: std.mem.Allocator, entries: *std.ArrayList(Entry), path
     for (entries.items) |*entry| {
         if (std.mem.eql(u8, entry.key, head)) {
             if (entry.value != .object) {
-                if (strict) return error.ExpansionConflict;
+                if (strict) {
+                    leaf.deinit(allocator);
+                    return error.ExpansionConflict;
+                }
                 entry.value.deinit(allocator);
                 entry.value = try emptyObject(allocator);
             }
             var list: std.ArrayList(Entry) = .empty;
             defer list.deinit(allocator);
+            const old_entries = entry.value.object;
             try list.appendSlice(allocator, entry.value.object);
-            try insertPath(allocator, &list, tail, leaf, strict);
+            insertPath(allocator, &list, tail, leaf, strict) catch |err| return err;
             entry.value.object = try list.toOwnedSlice(allocator);
+            allocator.free(old_entries);
             return;
         }
     }
 
     var child: std.ArrayList(Entry) = .empty;
-    errdefer deinitEntries(allocator, child.items);
+    errdefer {
+        deinitEntries(allocator, child.items);
+        child.deinit(allocator);
+    }
     try insertPath(allocator, &child, tail, leaf, strict);
-    try entries.append(allocator, .{
+    const child_entries = try child.toOwnedSlice(allocator);
+    appendExpandedEntry(allocator, entries, .{
         .key = try value_mod.dupe(allocator, head),
-        .value = .{ .object = try child.toOwnedSlice(allocator) },
+        .value = .{ .object = child_entries },
         .quoted = false,
-    });
+    }, strict) catch |err| {
+        if (err == error.OutOfMemory) {
+            deinitEntries(allocator, child_entries);
+            allocator.free(child_entries);
+        }
+        return err;
+    };
+}
+
+fn appendExpandedEntry(allocator: std.mem.Allocator, entries: *std.ArrayList(Entry), entry: Entry, strict: bool) ParseError!void {
+    for (entries.items) |*existing| {
+        if (std.mem.eql(u8, existing.key, entry.key)) {
+            if (strict) {
+                var owned = entry;
+                allocator.free(owned.key);
+                owned.value.deinit(allocator);
+                return error.ExpansionConflict;
+            }
+            allocator.free(existing.key);
+            existing.value.deinit(allocator);
+            existing.* = entry;
+            return;
+        }
+    }
+    try entries.append(allocator, entry);
 }
 
 fn allIdentifierSegments(path: []const u8) bool {
