@@ -6,7 +6,7 @@
 
 Serialization framework for Zig
 
-Uses Zig's comptime reflection (`@typeInfo`) to serialize and deserialize any Zig type across JSON, MessagePack, TOML, YAML, XML, ZON, and CSV without macros, code generation, or runtime type information.
+Uses Zig's comptime reflection (`@typeInfo`) to serialize and deserialize any Zig type across JSON, MessagePack, TOML, YAML, XML, ZON, TOON, and CSV without macros, code generation, or runtime type information.
 
 ## Table of Contents
 
@@ -28,6 +28,7 @@ Uses Zig's comptime reflection (`@typeInfo`) to serialize and deserialize any Zi
   - [YAML](#yaml)
   - [XML](#xml)
   - [ZON](#zon)
+  - [TOON](#toon)
 - [Serde Options](#serde-options)
   - [Field renaming](#field-renaming)
   - [Asymmetric renaming](#asymmetric-renaming)
@@ -127,6 +128,7 @@ Supported Zig versions:
 | YAML | `serde.yaml` | + | + |
 | XML | `serde.xml` | + | + |
 | ZON | `serde.zon` | + | + |
+| TOON | `serde.toon` | + | + |
 | CSV | `serde.csv` | + | + |
 
 Every format exposes the same API:
@@ -185,6 +187,7 @@ const json = try serde.json.toSlice(allocator, person);
 const msgpack = try serde.msgpack.toSlice(allocator, person);
 const yaml = try serde.yaml.toSlice(allocator, person);
 const xml = try serde.xml.toSlice(allocator, person);
+const toon = try serde.toon.toSlice(allocator, person);
 ```
 
 ### Arena allocator (recommended for deserialization)
@@ -366,6 +369,23 @@ const bytes = try serde.zon.toSlice(allocator, Config{
 //         .name = "mydb",
 //     },
 // }
+```
+
+### TOON
+
+Produces compact TOON documents for the JSON data model:
+
+```zig
+const bytes = try serde.toon.toSlice(allocator, Config{
+    .title = "myapp",
+    .port = 3000,
+    .database = .{ .host = "localhost", .name = "mydb" },
+});
+// title: myapp
+// port: 3000
+// database:
+//   host: localhost
+//   name: mydb
 ```
 
 ## Serde Options

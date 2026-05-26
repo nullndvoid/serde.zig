@@ -55,6 +55,10 @@ pub fn main() !void {
     defer allocator.free(zon_bytes);
     std.debug.print("=== ZON ===\n{s}\n\n", .{zon_bytes});
 
+    const toon_bytes = try serde.toon.toSliceSchema(allocator, config, schema);
+    defer allocator.free(toon_bytes);
+    std.debug.print("=== TOON ===\n{s}\n\n", .{toon_bytes});
+
     const flat_config: []const ServiceConfig = &.{config};
     const csv_bytes = try serde.csv.toSliceSchema(allocator, flat_config, schema);
     defer allocator.free(csv_bytes);
@@ -87,5 +91,11 @@ pub fn main() !void {
     std.debug.print("Roundtrip from MsgPack: service_name={s} ok={}\n", .{
         parsed_msgpack.service_name,
         std.mem.eql(u8, parsed_msgpack.service_name, config.service_name),
+    });
+
+    const parsed_toon = try serde.toon.fromSliceSchema(ServiceConfig, arena.allocator(), toon_bytes, schema);
+    std.debug.print("Roundtrip from TOON: service_name={s} ok={}\n", .{
+        parsed_toon.service_name,
+        std.mem.eql(u8, parsed_toon.service_name, config.service_name),
     });
 }
