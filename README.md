@@ -95,7 +95,7 @@ zig fetch --save git+https://github.com/OrlovEvgeny/serde.zig
 Specific release:
 
 ```sh
-zig fetch --save https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.3.tar.gz
+zig fetch --save https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.5.tar.gz
 ```
 
 Then in your `build.zig`:
