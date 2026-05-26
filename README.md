@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/OrlovEvgeny/serde.zig/actions/workflows/ci.yml/badge.svg)](https://github.com/OrlovEvgeny/serde.zig/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/OrlovEvgeny/serde.zig?label=release)](https://github.com/OrlovEvgeny/serde.zig/releases/latest)
-[![Zig](https://img.shields.io/badge/zig-0.15.2%20%7C%200.16.0-blue)](https://ziglang.org/download/)
+[![Zig](https://img.shields.io/badge/zig-0.15.2%20%7C%200.16.0%20%7C%200.17--dev-blue)](https://ziglang.org/download/)
 
 Serialization framework for Zig
 
@@ -108,7 +108,7 @@ const serde_dep = b.dependency("serde", .{
 exe.root_module.addImport("serde", serde_dep.module("serde"));
 ```
 
-Requires Zig 0.15.2 or 0.16.0.
+Requires Zig 0.15.2 or later, including current Zig 0.17 development builds.
 
 Supported Zig versions:
 
@@ -116,7 +116,7 @@ Supported Zig versions:
 |-------------|--------|
 | `0.16.0` | current stable, required in docs CI |
 | `0.15.2` | previous stable, fully supported |
-| `master` | tracked in CI as non-blocking signal |
+| `0.17-dev` / `master` | supported against current development snapshots and tracked in CI |
 
 ## Formats
 
@@ -973,11 +973,12 @@ April 24, 2026:
 | borrowed JSON strings | deserialize | serde | 78.17 | 0.00 | 0.00 | 817.44 |
 | array of structs JSON | roundtrip | serde | 5115.59 | 2.00 | 1888.00 | 78.11 |
 
-CI uploads benchmark baseline/result artifacts for Zig 0.15.2 and 0.16.0. On
-pull requests, CI compares the PR against the base SHA on the same runner when
-the base branch already has `zig build bench`; otherwise it falls back to the
-checked-in empty baseline. Regressions over the configured threshold are shown
-in the GitHub Actions summary without failing the PR.
+CI uploads benchmark baseline/result artifacts for Zig 0.15.2 and 0.16.0. The
+test matrix also runs Zig master, which currently tracks 0.17 development
+snapshots. On pull requests, CI compares the PR against the base SHA on the same
+runner when the base branch already has `zig build bench`; otherwise it falls
+back to the checked-in empty baseline. Regressions over the configured threshold
+are shown in the GitHub Actions summary without failing the PR.
 
 ## Tests
 

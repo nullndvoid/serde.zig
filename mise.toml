@@ -26,3 +26,6 @@ run = "mise -E zig15 run ci"
 
 [tasks.ci-16]
 run = "mise -E zig16 run ci"
+
+[tasks.ci-17]
+run = "mise -E zig17 run ci"
