@@ -90,6 +90,7 @@ pub fn build(b: *std.Build) void {
         "test/fuzz_csv.zig",
         "test/fuzz_xml.zig",
         "test/fuzz_yaml.zig",
+        "test/fuzz_toon.zig",
     };
 
     for (fuzz_sources) |src| {
