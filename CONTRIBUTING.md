@@ -4,7 +4,9 @@ Thank you for your interest in contributing! This document covers the basics.
 
 ## Development Setup
 
-You need [Zig 0.15.2](https://ziglang.org/download/) or later. CI additionally runs against `master` as a non-blocking signal; see the Compatibility section of the README.
+You need [Zig 0.15.2](https://ziglang.org/download/) or later. CI also runs
+against Zig master, which currently tracks 0.17 development builds; see the
+Compatibility section of the README.
 
 ```sh
 git clone https://github.com/OrlovEvgeny/serde.zig.git
@@ -12,19 +14,23 @@ cd serde.zig
 zig build test
 ```
 
-The repository also includes [mise](https://mise.jdx.dev/) configs for the supported stable Zig versions:
+The repository also includes [mise](https://mise.jdx.dev/) configs for the
+supported Zig versions:
 
 ```sh
 mise install
 mise -E zig15 install
 mise -E zig16 install
+mise -E zig17 install
 
 mise run ci
 mise -E zig15 run ci
 mise -E zig16 run ci
+mise -E zig17 run ci
 ```
 
-`mise.toml` defaults to Zig 0.16.0. The `zig15` and `zig16` environments select Zig 0.15.2 and 0.16.0 explicitly.
+`mise.toml` defaults to Zig 0.16.0. The `zig15`, `zig16`, and `zig17`
+environments select Zig 0.15.2, 0.16.0, and Zig master/0.17-dev explicitly.
 
 ## Code Style
 
