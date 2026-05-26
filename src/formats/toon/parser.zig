@@ -117,7 +117,11 @@ const Parser = struct {
             if (h.key == null) {
                 var owned = h;
                 owned.fields = if (h.fields) |fields| try cloneFieldList(self.allocator, fields) else null;
-                return try self.parseArrayFromHeader(owned, self.lines.items[first_idx].depth, null);
+                const value = try self.parseArrayFromHeader(owned, self.lines.items[first_idx].depth, null);
+                errdefer value.deinit(self.allocator);
+                self.skipBlanks();
+                if (self.index < self.lines.items.len) return error.InvalidSyntax;
+                return value;
             }
             self.freeHeaderKey(h);
         }
@@ -204,7 +208,10 @@ const Parser = struct {
             while (self.index < self.lines.items.len) {
                 const line = self.lines.items[self.index];
                 if (line.blank) {
-                    if (self.options.strict) return error.InvalidSyntax;
+                    if (self.options.strict) {
+                        if (rows.items.len < h.len) return error.InvalidSyntax;
+                        break;
+                    }
                     self.index += 1;
                     continue;
                 }
@@ -264,7 +271,10 @@ const Parser = struct {
         while (self.index < self.lines.items.len) {
             const line = self.lines.items[self.index];
             if (line.blank) {
-                if (self.options.strict) return error.InvalidSyntax;
+                if (self.options.strict) {
+                    if (items.items.len < h.len) return error.InvalidSyntax;
+                    break;
+                }
                 self.index += 1;
                 continue;
             }
@@ -356,6 +366,7 @@ const Parser = struct {
         const bracket_pos = firstUnquotedByte(content, '[') orelse return null;
         var key: ?[]u8 = null;
         var key_quoted = false;
+        var fields: ?[][]u8 = null;
         if (bracket_pos > 0) {
             const key_token = content[0..bracket_pos];
             const parsed = try self.parseKey(key_token);
@@ -363,8 +374,9 @@ const Parser = struct {
             key_quoted = parsed.quoted;
         }
         errdefer if (key) |k| self.allocator.free(k);
+        errdefer if (fields) |f| freeStringList(self.allocator, f);
 
-        const close = std.mem.indexOfScalarPos(u8, content, bracket_pos + 1, ']') orelse return error.InvalidHeader;
+        const close = std.mem.indexOfScalarPos(u8, content, bracket_pos + 1, ']') orelse return self.invalidHeader(key, fields);
         var inner = content[bracket_pos + 1 .. close];
         var delimiter: Delimiter = .comma;
         if (inner.len > 0 and inner[inner.len - 1] == '|') {
@@ -374,18 +386,18 @@ const Parser = struct {
             delimiter = .tab;
             inner = inner[0 .. inner.len - 1];
         }
-        if (!validLength(inner)) return error.InvalidHeader;
-        const len = std.fmt.parseInt(usize, inner, 10) catch return error.InvalidHeader;
+        if (!validLength(inner)) return self.invalidHeader(key, fields);
+        const len = std.fmt.parseInt(usize, inner, 10) catch return self.invalidHeader(key, fields);
 
         var pos = close + 1;
-        var fields: ?[][]u8 = null;
-        errdefer if (fields) |f| freeStringList(self.allocator, f);
         if (pos < content.len and content[pos] == '{') {
-            const end = findMatchingBrace(content, pos) orelse return error.InvalidHeader;
-            fields = try splitKeys(self.allocator, content[pos + 1 .. end], delimiter);
+            const end = findMatchingBrace(content, pos) orelse return self.invalidHeader(key, fields);
+            const field_content = content[pos + 1 .. end];
+            if (delimiterMismatch(field_content, delimiter)) return self.invalidHeader(key, fields);
+            fields = try splitKeys(self.allocator, field_content, delimiter);
             pos = end + 1;
         }
-        if (pos >= content.len or content[pos] != ':') return error.InvalidHeader;
+        if (pos >= content.len or content[pos] != ':') return self.invalidHeader(key, fields);
         const rest = trimStart(content[pos + 1 ..], " \t");
         return .{
             .key = key,
@@ -395,6 +407,13 @@ const Parser = struct {
             .fields = fields,
             .rest = rest,
         };
+    }
+
+    fn invalidHeader(self: *Parser, key: ?[]u8, fields: ?[][]u8) ParseError!?Header {
+        if (self.options.strict) return error.InvalidHeader;
+        if (key) |k| self.allocator.free(k);
+        if (fields) |f| freeStringList(self.allocator, f);
+        return null;
     }
 
     fn freeHeader(self: *Parser, h: Header) void {
@@ -573,6 +592,30 @@ fn findMatchingBrace(s: []const u8, open: usize) ?usize {
         if (!in_quote and c == '}') return i;
     }
     return null;
+}
+
+fn delimiterMismatch(s: []const u8, delimiter: Delimiter) bool {
+    if (delimiter == .comma) return false;
+    var in_quote = false;
+    var escaped = false;
+    for (s) |c| {
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (in_quote and c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            in_quote = !in_quote;
+            continue;
+        }
+        if (!in_quote and (c == ',' or c == '\t' or c == '|') and c != delimiterByte(delimiter)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn validLength(s: []const u8) bool {
