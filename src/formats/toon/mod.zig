@@ -173,4 +173,3 @@ test "tabular array" {
     defer testing.allocator.free(bytes);
     try testing.expectEqualStrings("[2]{id,name}:\n  1,Ada\n  2,Bob", bytes);
 }
-

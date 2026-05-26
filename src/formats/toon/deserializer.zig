@@ -63,4 +63,3 @@ fn writeJsonString(writer: *compat.Io.Writer, s: []const u8) !void {
     }
     try writer.writeByte('"');
 }
-
