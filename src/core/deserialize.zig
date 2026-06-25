@@ -253,7 +253,7 @@ fn deserializeStructFieldsSchema(
                     const WithMod = comptime opts.getFieldWithSchema(T, field.name, schema);
                     const raw = try map.nextValue(WithMod.WireType, allocator);
                     if (@hasDecl(WithMod, "deserializeAlloc")) {
-                        @field(result, field.name) = WithMod.deserializeAlloc(raw, allocator);
+                        @field(result, field.name) = WithMod.deserializeAlloc(raw, allocator) catch unreachable;
                     } else {
                         @field(result, field.name) = WithMod.deserialize(raw);
                     }
@@ -275,7 +275,7 @@ fn deserializeStructFieldsSchema(
                                 const WithMod = comptime opts.getFieldWithSchema(T, field.name, schema);
                                 const raw = try map.nextValue(WithMod.WireType, allocator);
                                 if (@hasDecl(WithMod, "deserializeAlloc")) {
-                                    @field(@field(result, field.name), sf.name) = WithMod.deserializeAlloc(raw, allocator);
+                                    @field(@field(result, field.name), sf.name) = WithMod.deserializeAlloc(raw, allocator) catch unreachable;
                                 } else {
                                     @field(@field(result, field.name), sf.name) = WithMod.deserialize(raw);
                                 }
@@ -746,6 +746,37 @@ test "deserialize struct with default" {
     const val = try deserialize(Def, testing.allocator, &deser, .{});
     try testing.expectEqual(@as(i32, 1), val.a);
     try testing.expectEqual(@as(i32, 99), val.b);
+}
+
+test "deserialize struct with base64 (slice)" {
+    const Base64 = struct {
+        data: []const u8,
+
+        pub const serde = .{
+            .with = .{
+                .data = @import("../helpers/base64.zig").Base64,
+            },
+        };
+    };
+
+    //  You can confirm these are equal yourself.
+    const input_base64 = "VGVzdCBwYXNzZWQ/";
+    const expected = "Test passed?";
+
+    var deser = MockDeserializer{
+        .map = .{
+            .keys = &.{"data"},
+            .values = &.{.{ .string = input_base64 }},
+        },
+    };
+
+    // TODO: Is this OK? Currently there's nothing in the README for this allocating behaviour.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const val = try deserialize(Base64, arena.allocator(), &deser, .{});
+
+    try testing.expectEqualStrings(expected, val.data);
 }
 
 test "deserialize struct with rename" {
