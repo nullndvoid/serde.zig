@@ -252,7 +252,11 @@ fn deserializeStructFieldsSchema(
                 if (comptime opts.hasFieldWithSchema(T, field.name, schema)) {
                     const WithMod = comptime opts.getFieldWithSchema(T, field.name, schema);
                     const raw = try map.nextValue(WithMod.WireType, allocator);
-                    @field(result, field.name) = WithMod.deserialize(raw);
+                    if (@hasDecl(WithMod, "deserializeAlloc")) {
+                        @field(result, field.name) = WithMod.deserializeAlloc(raw, allocator);
+                    } else {
+                        @field(result, field.name) = WithMod.deserialize(raw);
+                    }
                 } else {
                     @field(result, field.name) = try map.nextValue(field.type, allocator);
                 }
@@ -270,7 +274,11 @@ fn deserializeStructFieldsSchema(
                             if (comptime opts.hasFieldWithSchema(T, field.name, schema)) {
                                 const WithMod = comptime opts.getFieldWithSchema(T, field.name, schema);
                                 const raw = try map.nextValue(WithMod.WireType, allocator);
-                                @field(@field(result, field.name), sf.name) = WithMod.deserialize(raw);
+                                if (@hasDecl(WithMod, "deserializeAlloc")) {
+                                    @field(@field(result, field.name), sf.name) = WithMod.deserializeAlloc(raw, allocator);
+                                } else {
+                                    @field(@field(result, field.name), sf.name) = WithMod.deserialize(raw);
+                                }
                             } else {
                                 @field(@field(result, field.name), sf.name) = try map.nextValue(sf.type, allocator);
                             }
