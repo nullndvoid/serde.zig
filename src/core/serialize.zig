@@ -121,7 +121,12 @@ fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, compti
             const nested_info = @typeInfo(field.type).@"struct";
             inline for (nested_info.fields) |sf| {
                 const nested_wire = comptime options.wireFieldNameForDir(field.type, sf.name, {}, .serialize);
-                try ss.serializeField(nested_wire, @field(nested, sf.name));
+                if (comptime options.hasFieldWithSchema(T, field.name, schema)) {
+                    const WithMod = comptime options.getFieldWithSchema(T, field.name, schema);
+                    try ss.serializeField(nested_wire, WithMod.serialize(@field(nested, sf.name)));
+                } else {
+                    try ss.serializeField(nested_wire, @field(nested, sf.name));
+                }
             }
             continue;
         }

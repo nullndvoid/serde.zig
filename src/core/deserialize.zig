@@ -267,7 +267,14 @@ fn deserializeStructFieldsSchema(
                     const nested_info = @typeInfo(field.type).@"struct";
                     inline for (nested_info.fields) |sf| {
                         if (opts.matchesDeserializeName(field.type, sf.name, key, {})) {
-                            @field(@field(result, field.name), sf.name) = try map.nextValue(sf.type, allocator);
+                            if (comptime opts.hasFieldWithSchema(T, field.name, schema)) {
+                                const WithMod = comptime opts.getFieldWithSchema(T, field.name, schema);
+                                const raw = try map.nextValue(WithMod.WireType, allocator);
+                                @field(@field(result, field.name), sf.name) = WithMod.deserialize(raw);
+                            } else {
+                                @field(@field(result, field.name), sf.name) = try map.nextValue(sf.type, allocator);
+                            }
+
                             matched = true;
                         }
                     }
