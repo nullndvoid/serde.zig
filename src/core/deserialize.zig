@@ -748,14 +748,22 @@ test "deserialize struct with default" {
     try testing.expectEqual(@as(i32, 99), val.b);
 }
 
-test "deserialize struct with base64 (slice)" {
-    const Base64 = struct {
+test "deserialize flatten + nested .with" {
+    const B64 = struct {
         data: []const u8,
 
         pub const serde = .{
             .with = .{
                 .data = @import("../helpers/base64.zig").Base64,
             },
+        };
+    };
+
+    const Base64 = struct {
+        b64: B64,
+
+        pub const serde = .{
+            .flatten = &[_][]const u8{"b64"},
         };
     };
 
@@ -776,7 +784,7 @@ test "deserialize struct with base64 (slice)" {
 
     const val = try deserialize(Base64, arena.allocator(), &deser, .{});
 
-    try testing.expectEqualStrings(expected, val.data);
+    try testing.expectEqualStrings(expected, val.b64.data);
 }
 
 test "deserialize struct with rename" {
