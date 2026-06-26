@@ -12,6 +12,7 @@ pub const DeserializeError = error{
     Overflow,
     WrongType,
     TrailingData,
+    WithFailed,
 };
 
 pub const Deserializer = struct {
@@ -450,6 +451,7 @@ fn errorFromAny(err: anyerror) DeserializeError {
         error.MissingField => error.MissingField,
         error.UnexpectedEof => error.UnexpectedEof,
         error.OutOfMemory => error.OutOfMemory,
+        error.WithFailed => error.WithFailed,
         else => error.WrongType,
     };
 }

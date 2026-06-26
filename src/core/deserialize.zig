@@ -225,7 +225,6 @@ fn deserializeStructFieldsSchema(
             if (@typeInfo(field.type) != .@"struct")
                 @compileError("Flatten requires a struct type, got " ++ @typeName(field.type));
             @field(result, field.name) = initWithDefaults(field.type);
-            fields_seen.set(i);
             continue;
         }
 
@@ -253,7 +252,10 @@ fn deserializeStructFieldsSchema(
                     const WithMod = comptime opts.getFieldWithSchema(T, field.name, schema);
                     const raw = try map.nextValue(WithMod.WireType, allocator);
                     if (@hasDecl(WithMod, "deserializeAlloc")) {
-                        @field(result, field.name) = WithMod.deserializeAlloc(raw, allocator) catch unreachable;
+                        @field(result, field.name) = WithMod.deserializeAlloc(raw, allocator) catch |err| switch (err) {
+                            error.OutOfMemory => return map.raiseError(error.OutOfMemory),
+                            else => return map.raiseError(error.WithFailed),
+                        };
                     } else {
                         @field(result, field.name) = WithMod.deserialize(raw);
                     }
@@ -271,11 +273,14 @@ fn deserializeStructFieldsSchema(
                     const nested_info = @typeInfo(field.type).@"struct";
                     inline for (nested_info.fields) |sf| {
                         if (opts.matchesDeserializeName(field.type, sf.name, key, {})) {
-                            if (comptime opts.hasFieldWithSchema(T, field.name, schema)) {
-                                const WithMod = comptime opts.getFieldWithSchema(T, field.name, schema);
+                            if (comptime opts.hasFieldWithSchema(field.type, sf.name, {})) {
+                                const WithMod = comptime opts.getFieldWithSchema(field.type, sf.name, {});
                                 const raw = try map.nextValue(WithMod.WireType, allocator);
                                 if (@hasDecl(WithMod, "deserializeAlloc")) {
-                                    @field(@field(result, field.name), sf.name) = WithMod.deserializeAlloc(raw, allocator) catch unreachable;
+                                    @field(@field(result, field.name), sf.name) = WithMod.deserializeAlloc(raw, allocator) catch |err| switch (err) {
+                                        error.OutOfMemory => return map.raiseError(error.OutOfMemory),
+                                        else => return map.raiseError(error.WithFailed),
+                                    };
                                 } else {
                                     @field(@field(result, field.name), sf.name) = WithMod.deserialize(raw);
                                 }
@@ -609,7 +614,7 @@ const MockMapAccess = struct {
     values: []const MockValue,
     pos: usize = 0,
 
-    pub const Error = error{ UnknownField, MissingField, UnexpectedEof, OutOfMemory, WrongType };
+    pub const Error = error{ UnknownField, MissingField, UnexpectedEof, OutOfMemory, WithFailed, WrongType };
 
     pub fn nextKey(self: *MockMapAccess, _: Allocator) Error!?[]const u8 {
         if (self.pos >= self.keys.len) return null;
@@ -636,6 +641,7 @@ const MockMapAccess = struct {
         return switch (err) {
             error.UnknownField => error.UnknownField,
             error.MissingField => error.MissingField,
+            error.WithFailed => error.WithFailed,
             else => error.WrongType,
         };
     }
@@ -689,6 +695,7 @@ const MockDeserializer = struct {
         return switch (err) {
             error.UnknownField => error.UnknownField,
             error.MissingField => error.MissingField,
+            error.WithFailed => error.WithFailed,
             else => error.WrongType,
         };
     }
@@ -767,7 +774,6 @@ test "deserialize flatten + nested .with" {
         };
     };
 
-    //  You can confirm these are equal yourself.
     const input_base64 = "VGVzdCBwYXNzZWQ/";
     const expected = "Test passed?";
 
@@ -778,13 +784,41 @@ test "deserialize flatten + nested .with" {
         },
     };
 
-    // TODO: Is this OK? Currently there's nothing in the README for this allocating behaviour.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
     const val = try deserialize(Base64, arena.allocator(), &deser, .{});
 
     try testing.expectEqualStrings(expected, val.b64.data);
+}
+
+test "deserialize flatten + nested .with maps allocating helper errors" {
+    const B64 = struct {
+        data: []const u8,
+
+        pub const serde = .{
+            .with = .{
+                .data = @import("../helpers/base64.zig").Base64,
+            },
+        };
+    };
+
+    const Base64 = struct {
+        b64: B64,
+
+        pub const serde = .{
+            .flatten = &[_][]const u8{"b64"},
+        };
+    };
+
+    var deser = MockDeserializer{
+        .map = .{
+            .keys = &.{"data"},
+            .values = &.{.{ .string = "not base64" }},
+        },
+    };
+
+    try testing.expectError(error.WithFailed, deserialize(Base64, testing.allocator, &deser, .{}));
 }
 
 test "deserialize struct with rename" {

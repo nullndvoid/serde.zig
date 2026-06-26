@@ -121,8 +121,8 @@ fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, compti
             const nested_info = @typeInfo(field.type).@"struct";
             inline for (nested_info.fields) |sf| {
                 const nested_wire = comptime options.wireFieldNameForDir(field.type, sf.name, {}, .serialize);
-                if (comptime options.hasFieldWithSchema(T, field.name, schema)) {
-                    const WithMod = comptime options.getFieldWithSchema(T, field.name, schema);
+                if (comptime options.hasFieldWithSchema(field.type, sf.name, {})) {
+                    const WithMod = comptime options.getFieldWithSchema(field.type, sf.name, {});
                     try ss.serializeField(nested_wire, WithMod.serialize(@field(nested, sf.name)));
                 } else {
                     try ss.serializeField(nested_wire, @field(nested, sf.name));
@@ -641,6 +641,46 @@ test "serializeWith: struct containing OOB-overridden type" {
     try serializeWith(Inner, .{ .val = 99 }, &mock, map);
     // Inner should be serialized via the adapter (as int), not as a struct.
     try testing.expectEqual(TestEvent{ .int_val = 99 }, mock.events.items[0]);
+}
+
+test "serialize flatten + nested .with" {
+    const Wrapped = struct {
+        value: u8,
+
+        pub const serde = .{
+            .with = .{
+                .value = struct {
+                    pub const WireType = []const u8;
+
+                    pub fn serialize(value: u8) []const u8 {
+                        return if (value == 42) "forty-two" else "other";
+                    }
+
+                    pub fn deserialize(raw: []const u8) u8 {
+                        return if (std.mem.eql(u8, raw, "forty-two")) 42 else 0;
+                    }
+                },
+            },
+        };
+    };
+
+    const Outer = struct {
+        wrapped: Wrapped,
+
+        pub const serde = .{
+            .flatten = &[_][]const u8{"wrapped"},
+        };
+    };
+
+    var mock = MockSerializer.init(testing.allocator);
+    defer mock.deinit();
+
+    try serialize(Outer, .{ .wrapped = .{ .value = 42 } }, &mock, .{});
+
+    try testing.expectEqual(TestEvent.struct_begin, mock.events.items[0]);
+    try testing.expectEqualStrings("value", mock.events.items[1].field);
+    try testing.expectEqual(TestEvent{ .string_val = "forty-two" }, mock.events.items[2]);
+    try testing.expectEqual(TestEvent.struct_end, mock.events.items[3]);
 }
 
 test "serializeWith: no match falls through to default" {
