@@ -16,6 +16,7 @@ pub const DeserializeError = error{
     WrongType,
     Overflow,
     MalformedXml,
+    WithFailed,
 };
 
 pub const Deserializer = struct {
@@ -422,6 +423,7 @@ fn errorFromAny(err: anyerror) DeserializeError {
         error.UnexpectedEof => error.UnexpectedEof,
         error.OutOfMemory => error.OutOfMemory,
         error.MalformedXml => error.MalformedXml,
+        error.WithFailed => error.WithFailed,
         else => error.WrongType,
     };
 }
