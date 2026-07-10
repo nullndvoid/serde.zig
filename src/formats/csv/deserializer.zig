@@ -21,6 +21,7 @@ pub const DeserializeError = error{
     FieldCountMismatch,
     WrongType,
     Overflow,
+    WithFailed,
 };
 
 pub const Options = struct {
@@ -195,6 +196,7 @@ fn errorFromAny(err: anyerror) DeserializeError {
         error.UnexpectedEof => error.UnexpectedEof,
         error.FieldCountMismatch => error.FieldCountMismatch,
         error.OutOfMemory => error.OutOfMemory,
+        error.WithFailed => error.WithFailed,
         else => error.WrongType,
     };
 }
