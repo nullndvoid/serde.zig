@@ -4,7 +4,8 @@ const builtin = @import("builtin");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const bench_config = parseBenchArgs(b);
+    const bench_config = BenchConfig{};
+
     const compat_source = switch (builtin.zig_version.minor) {
         15 => "src/compat.zig",
         16...std.math.maxInt(u32) => "src/compat_0_16.zig",
@@ -235,44 +236,3 @@ const BenchConfig = struct {
     threshold_percent: f64 = 10.0,
     out: []const u8 = "",
 };
-
-fn parseBenchArgs(b: *std.Build) BenchConfig {
-    var config = BenchConfig{};
-    const args = b.args orelse return config;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--format")) {
-            i += 1;
-            if (i >= args.len) @panic("--format requires a value");
-            config.format = b.dupe(args[i]);
-        } else if (std.mem.eql(u8, arg, "--filter")) {
-            i += 1;
-            if (i >= args.len) @panic("--filter requires a value");
-            config.filter = b.dupe(args[i]);
-        } else if (std.mem.eql(u8, arg, "--compare")) {
-            i += 1;
-            if (i >= args.len) @panic("--compare requires a value");
-            if (std.mem.eql(u8, args[i], "std_json")) {
-                config.compare_std_json = true;
-            } else {
-                @panic("unsupported --compare value; expected std_json");
-            }
-        } else if (std.mem.eql(u8, arg, "--baseline")) {
-            i += 1;
-            if (i >= args.len) @panic("--baseline requires a value");
-            config.baseline = b.dupe(args[i]);
-        } else if (std.mem.eql(u8, arg, "--threshold")) {
-            i += 1;
-            if (i >= args.len) @panic("--threshold requires a value");
-            config.threshold_percent = std.fmt.parseFloat(f64, args[i]) catch @panic("invalid --threshold value");
-        } else if (std.mem.eql(u8, arg, "--out")) {
-            i += 1;
-            if (i >= args.len) @panic("--out requires a value");
-            config.out = b.dupe(args[i]);
-        } else {
-            @panic("unknown benchmark argument");
-        }
-    }
-    return config;
-}

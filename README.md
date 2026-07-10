@@ -918,7 +918,7 @@ fields with empty values.
 const bytes = try serde.json.toSliceWith(allocator, value, .{ .escape_js_unsafe = true });
 ```
 
-When true, U+2028 and U+2029 are escaped as ` ` / ` `. They are valid
+When true, U+2028 and U+2029 are escaped as `` / ``. They are valid
 JSON characters but illegal in JavaScript string literals; escape when embedding
 output in HTML `<script>` tags.
 
