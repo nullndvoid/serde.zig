@@ -106,4 +106,5 @@ test {
     _ = @import("formats/toon/parser.zig");
     _ = @import("formats/toon/serializer.zig");
     _ = @import("formats/toon/deserializer.zig");
+    _ = @import("reflect.zig");
 }

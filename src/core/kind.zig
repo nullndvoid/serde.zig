@@ -127,6 +127,8 @@ test "string kinds" {
     try testing.expectEqual(.string, comptime typeKind([]const u8));
     try testing.expectEqual(.string, comptime typeKind([]u8));
     try testing.expectEqual(.string, comptime typeKind([:0]const u8));
+    // Sentinel-terminated many-pointer, e.g. a C string literal's type.
+    try testing.expectEqual(.string, comptime typeKind([*:0]const u8));
 }
 
 test "container kinds" {

@@ -124,7 +124,7 @@ pub fn build(b: *std.Build) void {
         std.builtin.OptimizeMode,
         "bench-optimize",
         "Benchmark optimization mode",
-    ) orelse .ReleaseFast;
+    ) orelse if (@hasField(std.builtin.OptimizeMode, "fast")) .fast else .ReleaseFast;
     const bench_compat_mod = b.createModule(.{
         .root_source_file = b.path(compat_source),
         .target = target,
