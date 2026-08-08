@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const bench_config = BenchConfig{};
+    const bench_config = parseBenchOptions(b);
 
     const compat_source = switch (builtin.zig_version.minor) {
         15 => "src/compat.zig",
@@ -236,3 +236,20 @@ const BenchConfig = struct {
     threshold_percent: f64 = 10.0,
     out: []const u8 = "",
 };
+
+fn parseBenchOptions(b: *std.Build) BenchConfig {
+    var config = BenchConfig{};
+    if (b.option([]const u8, "bench-format", "Benchmark output format: text or json (default: text)")) |v|
+        config.format = v;
+    if (b.option([]const u8, "bench-filter", "Only run benchmarks whose id/format/case/operation/implementation contains this substring")) |v|
+        config.filter = v;
+    if (b.option(bool, "bench-compare-std-json", "Also run std.json comparison benchmarks (default: false)")) |v|
+        config.compare_std_json = v;
+    if (b.option([]const u8, "bench-baseline", "Path to a baseline JSON file to compare results against")) |v|
+        config.baseline = v;
+    if (b.option(f64, "bench-threshold", "Regression threshold percent (default: 10.0)")) |v|
+        config.threshold_percent = v;
+    if (b.option([]const u8, "bench-out", "Write benchmark results JSON to this path")) |v|
+        config.out = v;
+    return config;
+}

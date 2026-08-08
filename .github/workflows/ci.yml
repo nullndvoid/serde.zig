@@ -64,7 +64,7 @@ jobs:
           baseline="benchmark-baseline-${{ matrix.zig }}.json"
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -d serde-base ]; then
             if (cd serde-base && zig build -l | grep -q '^  bench'); then
-              (cd serde-base && zig build bench -- --format json --compare std_json --out "../$baseline")
+              (cd serde-base && zig build bench -Dbench-format=json -Dbench-compare-std-json -Dbench-out="../$baseline")
             else
               printf '{"schema_version":1,"results":[]}\n' > "$baseline"
             fi
@@ -73,7 +73,7 @@ jobs:
           fi
 
       - name: Run benchmarks
-        run: zig build bench -- --format json --compare std_json --baseline benchmark-baseline-${{ matrix.zig }}.json --out benchmark-results-${{ matrix.zig }}.json
+        run: zig build bench -Dbench-format=json -Dbench-compare-std-json -Dbench-baseline=benchmark-baseline-${{ matrix.zig }}.json -Dbench-out=benchmark-results-${{ matrix.zig }}.json
 
       - name: Benchmark summary
         shell: bash
