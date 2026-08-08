@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        zig: ["0.15.2", "0.16.0"]
+        zig: ["0.15.2", "0.16.0", "master"]
     steps:
       - uses: actions/checkout@v4
 
