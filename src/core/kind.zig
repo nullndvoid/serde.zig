@@ -47,7 +47,7 @@ fn classifyPointer(comptime p: std.builtin.Type.Pointer) Kind {
         return .slice;
     }
     // Sentinel-terminated pointer to u8 → string.
-    if (p.size == .many and p.child == u8 and p.sentinel != null)
+    if (p.size == .many and p.child == u8 and p.sentinel() != null)
         return .string;
     if (p.size == .one)
         return .pointer;
