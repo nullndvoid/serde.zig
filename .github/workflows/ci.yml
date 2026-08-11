@@ -64,7 +64,14 @@ jobs:
           baseline="benchmark-baseline-${{ matrix.zig }}.json"
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -d serde-base ]; then
             if (cd serde-base && zig build -l | grep -q '^  bench'); then
-              (cd serde-base && zig build bench -Dbench-format=json -Dbench-compare-std-json -Dbench-out="../$baseline")
+              # Older build.zig reads bench arguments from `zig build bench -- ...`
+              # instead of -Dbench-* build options; detect which style the base
+              # branch supports before invoking it.
+              if (cd serde-base && zig build -h | grep -q 'bench-out'); then
+                (cd serde-base && zig build bench -Dbench-format=json -Dbench-compare-std-json -Dbench-out="../$baseline")
+              else
+                (cd serde-base && zig build bench -- --format json --compare std_json --out "../$baseline")
+              fi
             else
               printf '{"schema_version":1,"results":[]}\n' > "$baseline"
             fi
