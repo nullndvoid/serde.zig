@@ -110,9 +110,12 @@ fn deserializeArray(
     const info = @typeInfo(T).array;
     const child = info.child;
     var result: T = undefined;
+    var initialized: usize = 0;
+    errdefer for (result[0..initialized]) |elem| freeAllocated(child, elem, allocator);
     var seq = try deserializer.deserializeSeqAccess();
     for (0..info.len) |i| {
         result[i] = try seq.nextElement(child, allocator) orelse return deserializer.raiseError(error.UnexpectedEof);
+        initialized += 1;
     }
     // Consume the closing delimiter.
     if (try seq.nextElement(child, allocator) != null)
@@ -143,10 +146,17 @@ fn deserializeTupleSchema(
     _ = map;
     const info = @typeInfo(T).@"struct";
     var result: T = undefined;
+    var fields_seen = compat.staticBitSetEmpty(info.fields.len);
+    errdefer {
+        inline for (info.fields, 0..) |field, i| {
+            if (fields_seen.isSet(i)) freeAllocated(field.type, @field(result, field.name), allocator);
+        }
+    }
     var seq = try deserializer.deserializeSeqAccess();
-    inline for (info.fields) |field| {
+    inline for (info.fields, 0..) |field, i| {
         @field(result, field.name) = try seq.nextElement(field.type, allocator) orelse
             return deserializer.raiseError(error.UnexpectedEof);
+        fields_seen.set(i);
     }
     if (info.fields.len > 0) {
         if (try seq.nextElement(info.fields[0].type, allocator) != null)
@@ -157,13 +167,14 @@ fn deserializeTupleSchema(
 
 /// Recursively free heap memory owned by a deserialized value.
 /// No-op for borrowed deserialization with ArenaAllocator.
-fn freeAllocated(comptime T: type, value: T, allocator: Allocator) void {
+pub fn freeAllocated(comptime T: type, value: T, allocator: Allocator) void {
     switch (comptime kind_mod.typeKind(T)) {
-        .string => allocator.free(value),
+        .string, .bytes => allocator.free(value),
         .slice => {
             for (value) |elem| freeAllocated(@typeInfo(T).pointer.child, elem, allocator);
             allocator.free(value);
         },
+        .array => for (value) |elem| freeAllocated(@typeInfo(T).array.child, elem, allocator),
         .pointer => {
             freeAllocated(@typeInfo(T).pointer.child, value.*, allocator);
             allocator.destroy(value);
@@ -173,9 +184,27 @@ fn freeAllocated(comptime T: type, value: T, allocator: Allocator) void {
                 freeAllocated(field.type, @field(value, field.name), allocator);
             }
         },
+        .tuple => {
+            inline for (@typeInfo(T).@"struct".fields) |field| {
+                freeAllocated(field.type, @field(value, field.name), allocator);
+            }
+        },
+        .@"union" => {
+            inline for (@typeInfo(T).@"union".fields) |field| {
+                if (value == @field(T, field.name) and field.type != void)
+                    freeAllocated(field.type, @field(value, field.name), allocator);
+            }
+        },
         .optional => if (value) |v| freeAllocated(@typeInfo(T).optional.child, v, allocator),
         .map => {
             var mut = value;
+            const K = kind_mod.MapKeyType(T);
+            const V = kind_mod.MapValueType(T);
+            var it = mut.iterator();
+            while (it.next()) |entry| {
+                freeAllocated(V, entry.value_ptr.*, allocator);
+                if (K == []const u8) freeAllocated(K, entry.key_ptr.*, allocator);
+            }
             if (comptime kind_mod.isMapManaged(T)) {
                 mut.deinit();
             } else {
