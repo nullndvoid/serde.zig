@@ -91,6 +91,7 @@ fn serializeOptionalSchema(comptime T: type, value: T, serializer: anytype, comp
 fn serializeArraySchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const child = Child(T);
     var arr = try serializer.beginArray();
+    defer cleanupContainer(&arr);
     for (value) |elem| {
         try serializeSchema(child, elem, &arr, {}, map);
     }
@@ -100,6 +101,7 @@ fn serializeArraySchema(comptime T: type, value: T, serializer: anytype, comptim
 fn serializeSliceSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const child = Child(T);
     var arr = try serializer.beginArray();
+    defer cleanupContainer(&arr);
     for (value) |elem| {
         try serializeSchema(child, elem, &arr, {}, map);
     }
@@ -109,6 +111,7 @@ fn serializeSliceSchema(comptime T: type, value: T, serializer: anytype, comptim
 fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, comptime schema: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     _ = map;
     var ss = try serializer.beginStruct();
+    defer cleanupContainer(&ss);
 
     inline for (reflect.structFields(T)) |field| {
         if (comptime options.shouldSkipFieldSchema(T, field.name, .serialize, schema)) continue;
@@ -153,6 +156,7 @@ fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, compti
 
 fn serializeTupleSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     var arr = try serializer.beginArray();
+    defer cleanupContainer(&arr);
     inline for (reflect.structFields(T)) |field| {
         try serializeSchema(field.type, @field(value, field.name), &arr, {}, map);
     }
@@ -182,6 +186,7 @@ fn serializeUnionExternalSchema(comptime T: type, value: T, serializer: anytype,
             } else {
                 const payload = @field(value, field.name);
                 var ss = try serializer.beginStruct();
+                defer cleanupContainer(&ss);
                 try ss.serializeField(wire_name, payload);
                 return ss.end();
             }
@@ -195,6 +200,7 @@ fn serializeUnionInternalSchema(comptime T: type, value: T, serializer: anytype,
         if (value == @field(T, field.name)) {
             const wire_name = comptime options.wireFieldNameForDir(T, field.name, schema, .serialize);
             var ss = try serializer.beginStruct();
+            defer cleanupContainer(&ss);
             try ss.serializeField(tag_field_name, @as([]const u8, wire_name));
             if (field.type == void) {
                 return ss.end();
@@ -218,6 +224,7 @@ fn serializeUnionAdjacentSchema(comptime T: type, value: T, serializer: anytype,
         if (value == @field(T, field.name)) {
             const wire_name = comptime options.wireFieldNameForDir(T, field.name, schema, .serialize);
             var ss = try serializer.beginStruct();
+            defer cleanupContainer(&ss);
             try ss.serializeField(tag_field_name, @as([]const u8, wire_name));
             if (field.type != void) {
                 const payload = @field(value, field.name);
@@ -258,11 +265,16 @@ fn serializeEnumSchema(comptime T: type, value: T, serializer: anytype, comptime
 fn serializeMapSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     _ = map;
     var ss = try serializer.beginStruct();
+    defer cleanupContainer(&ss);
     var it = value.iterator();
     while (it.next()) |entry| {
         try ss.serializeEntry(entry.key_ptr.*, entry.value_ptr.*);
     }
     return ss.end();
+}
+
+fn cleanupContainer(container: anytype) void {
+    if (comptime @hasDecl(@TypeOf(container.*), "deinit")) container.deinit();
 }
 
 const testing = std.testing;

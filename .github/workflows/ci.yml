@@ -105,6 +105,23 @@ jobs:
             benchmark-baseline-${{ matrix.zig }}.json
             benchmark-results-${{ matrix.zig }}.json
 
+  etf-interop:
+    name: ETF / OTP 29 interop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29.0"
+
+      - name: Run bidirectional ETF corpus checks
+        run: zig build interop
+
   docs:
     name: Deploy docs
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'

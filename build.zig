@@ -61,6 +61,7 @@ pub fn build(b: *std.Build) void {
         "test/adversarial_test.zig",
         "test/serde_options_test.zig",
         "test/toon_test.zig",
+        "test/etf_test.zig",
     };
 
     for (extra_test_sources) |src| {
@@ -92,6 +93,7 @@ pub fn build(b: *std.Build) void {
         "test/fuzz_xml.zig",
         "test/fuzz_yaml.zig",
         "test/fuzz_toon.zig",
+        "test/fuzz_etf.zig",
     };
 
     for (fuzz_sources) |src| {
@@ -109,6 +111,27 @@ pub fn build(b: *std.Build) void {
         });
         fuzz_step.dependOn(&fuzz_lib.step);
     }
+
+    // OTP 29 interoperability. The escript generates an authoritative corpus
+    // with term_to_binary, invokes the Zig helper, then verifies Zig output
+    // with binary_to_term. Erlang is intentionally only a test-time tool.
+    const interop_step = b.step("interop", "Run Erlang/OTP 29 ETF interoperability checks");
+    const interop_helper_mod = b.createModule(.{
+        .root_source_file = b.path("test/etf_interop_helper.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "serde", .module = serde_mod },
+            .{ .name = "compat", .module = compat_mod },
+        },
+    });
+    const interop_helper = b.addExecutable(.{
+        .name = "etf-interop-helper",
+        .root_module = interop_helper_mod,
+    });
+    const interop_run = b.addSystemCommand(&.{ "escript", "test/etf_interop.escript" });
+    interop_run.addFileArg(interop_helper.getEmittedBin());
+    interop_step.dependOn(&interop_run.step);
 
     // Performance benchmarks.
     const bench_step = b.step("bench", "Run performance benchmarks");

@@ -6,7 +6,7 @@
 
 Serialization framework for Zig
 
-Uses Zig's comptime reflection (`@typeInfo`) to serialize and deserialize any Zig type across JSON, MessagePack, TOML, YAML, XML, ZON, TOON, and CSV without macros, code generation, or runtime type information.
+Uses Zig's comptime reflection (`@typeInfo`) to serialize and deserialize any Zig type across JSON, MessagePack, Erlang ETF, TOML, YAML, XML, ZON, TOON, and CSV without macros, code generation, or runtime type information.
 
 ## Table of Contents
 
@@ -15,6 +15,7 @@ Uses Zig's comptime reflection (`@typeInfo`) to serialize and deserialize any Zi
 - [Installation](#installation)
 - [Formats](#formats)
 - [Supported Types](#supported-types)
+- [Erlang ETF / OTP 29](#erlang-etf--otp-29)
 - [Examples](#examples)
   - [Nested structs](#nested-structs)
   - [Arena allocator](#arena-allocator-recommended-for-deserialization)
@@ -53,7 +54,7 @@ Uses Zig's comptime reflection (`@typeInfo`) to serialize and deserialize any Zi
 
 **No boilerplate.** No macros, no code generation, no build steps. Just declare a struct and serialize it. Zig's comptime reflection handles everything at compile time.
 
-**Seven formats, one API.** JSON, MessagePack, TOML, YAML, XML, ZON, and CSV all share the same `toSlice`/`fromSlice`/`toWriter`/`fromReader` interface. Learn once, use everywhere.
+**Nine formats, one API.** JSON, MessagePack, Erlang ETF, TOML, YAML, XML, ZON, TOON, and CSV share the same `toSlice`/`fromSlice`/`toWriter`/`fromReader` shape. Learn once, use everywhere.
 
 **Out-of-band schemas.** Serialize the same type differently in different contexts without modifying the type itself. Essential for third-party types and API versioning.
 
@@ -120,16 +121,17 @@ Supported Zig versions:
 
 ## Formats
 
-| Format      | Module          | Serialize | Deserialize |
-| ----------- | --------------- | --------- | ----------- |
-| JSON        | `serde.json`    | +         | +           |
-| MessagePack | `serde.msgpack` | +         | +           |
-| TOML        | `serde.toml`    | +         | +           |
-| YAML        | `serde.yaml`    | +         | +           |
-| XML         | `serde.xml`     | +         | +           |
-| ZON         | `serde.zon`     | +         | +           |
-| TOON        | `serde.toon`    | +         | +           |
-| CSV         | `serde.csv`     | +         | +           |
+| Format              | Module          | Serialize | Deserialize |
+| ------------------- | --------------- | --------- | ----------- |
+| JSON                | `serde.json`    | +         | +           |
+| MessagePack         | `serde.msgpack` | +         | +           |
+| Erlang ETF / OTP 29 | `serde.etf`     | +         | +           |
+| TOML                | `serde.toml`    | +         | +           |
+| YAML                | `serde.yaml`    | +         | +           |
+| XML                 | `serde.xml`     | +         | +           |
+| ZON                 | `serde.zon`     | +         | +           |
+| TOON                | `serde.toon`    | +         | +           |
+| CSV                 | `serde.csv`     | +         | +           |
 
 Every format exposes the same API:
 
@@ -387,6 +389,95 @@ const bytes = try serde.toon.toSlice(allocator, Config{
 //   host: localhost
 //   name: mydb
 ```
+
+## Erlang ETF / OTP 29
+
+`serde.etf` supports the current [External Term Format](https://www.erlang.org/doc/apps/erts/erl_ext_dist.html) and the connected-message portion of the [OTP 29 Distribution Protocol](https://www.erlang.org/docs/29/apps/erts/erl_dist_protocol.html), including legacy input tags, arbitrary bignums, improper lists, bit-binaries, maps with term keys, process identities, funs, exports, opaque top-level `LOCAL_EXT`, and OTP 29 native `RECORD_EXT`. It offers two APIs:
+
+- Typed serialization for ordinary Zig values, with the same rename, skip, flatten, union, schema, and custom-adapter rules as the other formats.
+- An owning `Term` model for exact Erlang semantics, with `deinit`, `clone`, and semantic `eql`.
+
+### Typed mapping
+
+| Zig value | Canonical ETF output |
+|-----------|----------------------|
+| `bool` | atoms `true` / `false` |
+| `null`, `void`, empty optional | atom `null` |
+| byte strings | `BINARY_EXT` |
+| integers | smallest integer or bignum tag |
+| floats | finite `NEW_FLOAT_EXT` |
+| arrays, slices, tuples | proper ETF lists |
+| structs and maps | `MAP_EXT` |
+| field, enum, union names | binary |
+
+The default decoder accepts common Erlang and Elixir representations: `null`, `nil`, `undefined`, and `NIL_EXT` can become Zig null; binary, `STRING_EXT`, and byte-lists can become strings; names may be atoms or binaries; and sequences may be proper lists or tuples. Set `.strict = true` to accept only the canonical profile.
+
+```zig
+const wire = try serde.etf.toSliceWith(allocator, config, .{
+    .compression = .{ .threshold = 1024 },
+    .zlib_level = 6,
+});
+defer allocator.free(wire);
+
+const decoded = try serde.etf.fromSliceWith(Config, allocator, wire, .{
+    .strict = true,
+});
+```
+
+### Exact `Term` API
+
+All decoded slices and nested terms are owned by the allocator passed to `decodeTerm`.
+
+```zig
+var term = try serde.etf.decodeTerm(allocator, bytes, .{});
+defer term.deinit(allocator);
+
+var copy = try term.clone(allocator);
+defer copy.deinit(allocator);
+
+const canonical = try serde.etf.encodeTerm(allocator, term, .{});
+defer allocator.free(canonical);
+```
+
+Legacy float/atom/pid/port/reference and compact number/tuple tags normalize to modern semantic values. Latin-1 atoms normalize to UTF-8. `legacy_fun` requires `.allow_legacy = true` when writing, and opaque `local` requires `.allow_local = true`. NaN and infinity are rejected.
+
+### Compression and limits
+
+`COMPRESSED_EXT` is decoded automatically with its zlib checksum verified. Encoding supports `.never` (default), `.always`, and `.threshold`; `zlib_level` 0 stores the payload uncompressed while 1-9 trade speed for ratio. Defensive defaults apply to both dynamic and typed APIs:
+
+- 10 MiB input/output and uncompressed term size
+- depth 256
+- 1,000,000 collection elements
+- 1 MiB bignum magnitude
+
+All limits are configurable through `EncodeOptions` and `DecodeOptions`. Length arithmetic is checked before allocation.
+
+### Distribution codec
+
+`serde.etf.distribution` provides negotiated capability flags, independent 2048-entry send/receive atom caches, 4-byte framing, ticks, typed control operation variants, and OTP fragmentation/reassembly.
+
+```zig
+const dist = serde.etf.distribution;
+const caps = dist.CapabilityFlags{
+    .bits = dist.CapabilityFlags.dist_hdr_atom_cache |
+        dist.CapabilityFlags.utf8_atoms |
+        dist.CapabilityFlags.fragments,
+};
+
+var decoder = dist.Decoder.init(allocator, caps, .{});
+defer decoder.deinit();
+
+try decoder.feed(network_chunk); // chunks may split headers or frames
+while (try decoder.next()) |message_value| {
+    var message = message_value;
+    defer message.deinit(allocator);
+    // message is .tick or .data.{ control, payload }
+}
+```
+
+The encoder checks negotiated flags before spawn, payload-exit, unlink-id, alias, alternate-action, fragmentation, or native-record use. The decoder limits frames/reassembled messages to 10 MiB, concurrent fragment sequences to 64, and fragments per sequence to 1024 by default. Legacy pass-through type 112 is accepted.
+
+This module begins after a distribution handshake. EPMD, node handshakes, cookies, TCP/TLS, reconnection, and a ready-made Erlang node client are intentionally out of scope.
 
 ## Serde Options
 
@@ -986,6 +1077,9 @@ are shown in the GitHub Actions summary without failing the PR.
 
 ```sh
 zig build test
+zig build fuzz
+# Requires Erlang/OTP 29:
+zig build interop
 ```
 
 ## License
