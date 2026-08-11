@@ -186,12 +186,12 @@ pub fn freeAllocated(comptime T: type, value: T, allocator: Allocator) void {
             }
         },
         .tuple => {
-            inline for (@typeInfo(T).@"struct".fields) |field| {
+            inline for (reflect.structFields(T)) |field| {
                 freeAllocated(field.type, @field(value, field.name), allocator);
             }
         },
         .@"union" => {
-            inline for (@typeInfo(T).@"union".fields) |field| {
+            inline for (reflect.unionFields(T)) |field| {
                 if (value == @field(T, field.name) and field.type != void)
                     freeAllocated(field.type, @field(value, field.name), allocator);
             }
