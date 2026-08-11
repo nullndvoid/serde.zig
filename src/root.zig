@@ -16,6 +16,7 @@
 //! | `csv`    | CSV         |
 //! | `zon`    | ZON         |
 //! | `toon`   | TOON        |
+//! | `etf`    | Erlang ETF / OTP 29 distribution |
 //!
 //! ## Quick Start
 //!
@@ -35,6 +36,7 @@ pub const xml = @import("formats/xml/mod.zig");
 pub const yaml = @import("formats/yaml/mod.zig");
 pub const zon = @import("formats/zon/mod.zig");
 pub const toon = @import("formats/toon/mod.zig");
+pub const etf = @import("formats/etf/mod.zig");
 
 pub const serialize = core.serialize;
 pub const serializeWith = core.serializeWith;
@@ -106,4 +108,10 @@ test {
     _ = @import("formats/toon/parser.zig");
     _ = @import("formats/toon/serializer.zig");
     _ = @import("formats/toon/deserializer.zig");
+    _ = etf;
+    _ = @import("formats/etf/term.zig");
+    _ = @import("formats/etf/codec.zig");
+    _ = @import("formats/etf/serializer.zig");
+    _ = @import("formats/etf/deserializer.zig");
+    _ = @import("formats/etf/distribution.zig");
 }
